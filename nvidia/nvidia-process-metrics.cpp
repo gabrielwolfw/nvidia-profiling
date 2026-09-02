@@ -1,9 +1,13 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <cxxabi.h>
+#include <exception>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -26,7 +30,140 @@ static uint64_t bytes_d2d = 0;
 static nvmlDevice_t device;
 static bool nvml_initialized = false;
 
+static std::atomic<bool> metrics_sampling{false};
+static std::thread* metrics_thread = nullptr;
+
+constexpr auto METRICS_SAMPLE_INTERVAL =
+    std::chrono::milliseconds(50);
+
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
+
+
+/* ------------------------------------------------ */
+/* Local NVML sampling                              */
+/* ------------------------------------------------ */
+
+void SampleGpuMetrics() {
+
+  bool error_reported = false;
+
+  while (metrics_sampling.load(
+      std::memory_order_acquire)) {
+
+    unsigned int power_mw = 0;
+    unsigned int temperature_c = 0;
+    unsigned int graphics_clock_mhz = 0;
+    nvmlUtilization_t utilization{};
+
+    uint64_t timestamp_ns = 0;
+
+    const CUptiResult timestamp_result =
+        cuptiGetTimestamp(
+            &timestamp_ns);
+
+    const nvmlReturn_t power_result =
+        nvmlDeviceGetPowerUsage(
+            device,
+            &power_mw);
+
+    const nvmlReturn_t temperature_result =
+        nvmlDeviceGetTemperature(
+            device,
+            NVML_TEMPERATURE_GPU,
+            &temperature_c);
+
+    const nvmlReturn_t utilization_result =
+        nvmlDeviceGetUtilizationRates(
+            device,
+            &utilization);
+
+    const nvmlReturn_t clock_result =
+        nvmlDeviceGetClockInfo(
+            device,
+            NVML_CLOCK_GRAPHICS,
+            &graphics_clock_mhz);
+
+    if (timestamp_result == CUPTI_SUCCESS &&
+        power_result == NVML_SUCCESS &&
+        temperature_result == NVML_SUCCESS &&
+        utilization_result == NVML_SUCCESS &&
+        clock_result == NVML_SUCCESS) {
+
+      std::printf(
+          "timestamp_ns: %lld | "
+          "power: %u mW | "
+          "temperature: %u C | "
+          "gpu: %u %% | "
+          "memory: %u %% | "
+          "graphics_clock: %u MHz\n",
+          static_cast<long long>(timestamp_ns),
+          power_mw,
+          temperature_c,
+          utilization.gpu,
+          utilization.memory,
+          graphics_clock_mhz);
+
+    } else if (!error_reported) {
+
+      std::fprintf(
+          stderr,
+          "[NVML] One or more local GPU metrics could not be sampled\n");
+
+      error_reported = true;
+    }
+
+    std::this_thread::sleep_for(
+        METRICS_SAMPLE_INTERVAL);
+  }
+}
+
+
+void StartGpuMetricsSampling() {
+
+  if (!nvml_initialized ||
+      metrics_thread != nullptr) {
+    return;
+  }
+
+  metrics_sampling.store(
+      true,
+      std::memory_order_release);
+
+  try {
+
+    metrics_thread =
+        new std::thread(
+            SampleGpuMetrics);
+
+  } catch (const std::exception& error) {
+
+    metrics_sampling.store(
+        false,
+        std::memory_order_release);
+
+    std::fprintf(
+        stderr,
+        "[NVML] Failed to start local sampling: %s\n",
+        error.what());
+  }
+}
+
+
+void StopGpuMetricsSampling() {
+
+  metrics_sampling.store(
+      false,
+      std::memory_order_release);
+
+  if (metrics_thread == nullptr)
+    return;
+
+  if (metrics_thread->joinable())
+    metrics_thread->join();
+
+  delete metrics_thread;
+  metrics_thread = nullptr;
+}
 
 
 /* ------------------------------------------------ */
@@ -344,6 +481,9 @@ void ProfilerStart() {
       CUPTI_ACTIVITY_KIND_MEMCPY);
 
 
+  StartGpuMetricsSampling();
+
+
   std::printf(
       "Profiler started\n\n");
 }
@@ -355,6 +495,8 @@ void ProfilerStart() {
 
 __attribute__((destructor))
 void ProfilerStop() {
+
+  StopGpuMetricsSampling();
 
   cuptiActivityFlushAll(
       CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
@@ -546,8 +688,15 @@ void ProfilerStop() {
   -lcupti \
   -lnvidia-ml \
   -lcuda \
+  -pthread \
   -o libnvidia-process-metrics.so */
 
 
 // LD_PRELOAD=$PWD/libnvidia-process-metrics.so \
 python gpu-regression.py
+
+
+/* LD_PRELOAD=$PWD/nvidia/libnvidia-process-metrics.so \
+./benchmarks/build/bench_compute \
+  --duration 10 \
+  --warmup 5 */

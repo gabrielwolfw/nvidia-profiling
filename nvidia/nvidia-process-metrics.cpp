@@ -4,9 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <cxxabi.h>
 #include <exception>
-#include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -167,35 +165,6 @@ void StopGpuMetricsSampling() {
 
 
 /* ------------------------------------------------ */
-/* Demangle kernel name                             */
-/* ------------------------------------------------ */
-
-std::string Demangle(const char* name) {
-
-  if (nullptr == name)
-    return "unknown";
-
-  int status = 0;
-
-  char* result =
-      abi::__cxa_demangle(
-          name,
-          nullptr,
-          nullptr,
-          &status);
-
-  if (0 != status || nullptr == result)
-    return name;
-
-  std::string demangled(result);
-
-  std::free(result);
-
-  return demangled;
-}
-
-
-/* ------------------------------------------------ */
 /* CUPTI buffer                                     */
 /* ------------------------------------------------ */
 
@@ -245,13 +214,6 @@ void CUPTIAPI BufferCompleted(
           kernel->end
       });
 
-      const std::string name =
-          Demangle(kernel->name);
-
-      std::printf(
-          "[CUPTI] Kernel: %s | Duration: %.3f us\n",
-          name.c_str(),
-          (kernel->end - kernel->start) / 1000.0);
     }
 
 
@@ -481,11 +443,10 @@ void ProfilerStart() {
       CUPTI_ACTIVITY_KIND_MEMCPY);
 
 
-  StartGpuMetricsSampling();
-
-
   std::printf(
-      "Profiler started\n\n");
+      "\n--- Live GPU telemetry ---\n");
+
+  StartGpuMetricsSampling();
 }
 
 
@@ -508,7 +469,7 @@ void ProfilerStop() {
 
 
   std::printf(
-      "\n=== Process Metrics ===\n");
+      "\n--- Process Summary ---\n");
 
   std::printf(
       "PID: %d\n",
@@ -556,7 +517,7 @@ void ProfilerStop() {
 
 
     std::printf(
-        "\n--- 200 ms Windows ---\n");
+        "\n--- 200 ms Kernel Windows ---\n");
 
 
     uint64_t window_number = 0;

@@ -8,20 +8,21 @@ Run these commands on NVIDIA Thor from the repository root.
 cmake -S benchmarks -B benchmarks/build -DCMAKE_BUILD_TYPE=Release
 cmake --build benchmarks/build -j
 
-g++ -std=c++17 -fPIC -shared nvidia/nvidia-process-metrics.cpp \
+g++ -std=c++17 -fPIC -shared nvidia-process-metrics.cpp \
   -I/usr/local/cuda/include \
   -I/usr/local/cuda/extras/CUPTI/include \
   -L/usr/local/cuda/lib64 \
   -L/usr/local/cuda/extras/CUPTI/lib64 \
   -lcupti -lnvidia-ml -lcuda -pthread \
-  -o nvidia/libnvidia-process-metrics.so
+  -o libnvidia-process-metrics.so
 
-nvcc -std=c++17 nvidia/pm_sampling_simple.cu \
+nvcc -std=c++17 pm_sampling_simple.cu \
   -I/usr/local/cuda/extras/CUPTI/include \
-  -I/usr/local/cuda/extras/CUPTI/samples/Common \
+  -I/usr/local/cuda/extras/CUPTI/samples/common \
   -L/usr/local/cuda/extras/CUPTI/lib64 \
-  -lcupti -Xcompiler -pthread \
-  -o nvidia/pm_sampling_simple
+  -lcupti -lcuda \
+  -Xcompiler -pthread \
+  -o pm_sampling_simple
 ```
 
 ## Run a benchmark with process metrics

@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -16,10 +20,27 @@
 struct KernelEvent {
   uint64_t start;
   uint64_t end;
+  uint32_t device_id = 0;
+  uint32_t context_id = 0;
+  uint32_t stream_id = 0;
+  uint32_t correlation_id = 0;
+  std::string name;
 };
 
+struct GpuTelemetrySample {
+  uint64_t timestamp_ns;
+  uint64_t query_start_ns;
+  uint64_t query_end_ns;
+  unsigned int power_mw;
+  unsigned int temperature_c;
+  unsigned int gpu_utilization;
+  unsigned int memory_utilization;
+  unsigned int graphics_clock_mhz;
+};
 
 static std::vector<KernelEvent> kernels;
+static std::vector<GpuTelemetrySample> telemetry_samples;
+static std::mutex activity_mutex;
 
 static uint64_t bytes_h2d = 0;
 static uint64_t bytes_d2h = 0;
@@ -35,6 +56,97 @@ constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
 
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
+
+
+static std::filesystem::path GetOutputDirectory() {
+  const char* configured =
+      std::getenv("NVIDIA_METRICS_OUTPUT_DIR");
+
+  if (configured != nullptr && configured[0] != '\0')
+    return configured;
+
+  return ".";
+}
+
+
+static std::string EscapeCsv(const std::string& value) {
+  std::string escaped = "\"";
+
+  for (const char character : value) {
+    if (character == '\"')
+      escaped += '\"';
+    escaped += character;
+  }
+
+  escaped += "\"";
+  return escaped;
+}
+
+
+static void SaveTimelineCsvFiles() {
+  const std::filesystem::path output_directory =
+      GetOutputDirectory();
+  std::error_code error;
+  std::filesystem::create_directories(
+      output_directory,
+      error);
+
+  if (error) {
+    std::fprintf(
+        stderr,
+        "[Profiler] Cannot create output directory %s: %s\n",
+        output_directory.c_str(),
+        error.message().c_str());
+    return;
+  }
+
+  const auto telemetry_path =
+      output_directory / "gpu_telemetry.csv";
+  std::ofstream telemetry_file(telemetry_path);
+  telemetry_file <<
+      "timestamp_ns,query_start_ns,query_end_ns,power_mw,temperature_c,"
+      "gpu_utilization_pct,"
+      "memory_utilization_pct,graphics_clock_mhz\n";
+
+  for (const auto& sample : telemetry_samples) {
+    telemetry_file
+        << sample.timestamp_ns << ','
+        << sample.query_start_ns << ','
+        << sample.query_end_ns << ','
+        << sample.power_mw << ','
+        << sample.temperature_c << ','
+        << sample.gpu_utilization << ','
+        << sample.memory_utilization << ','
+        << sample.graphics_clock_mhz << '\n';
+  }
+
+  const auto kernels_path =
+      output_directory / "kernel_activity.csv";
+  std::ofstream kernels_file(kernels_path);
+  kernels_file <<
+      "event_id,pid,device_id,context_id,stream_id,correlation_id,"
+      "start_ns,end_ns,duration_ns,kernel_name\n";
+
+  for (size_t index = 0; index < kernels.size(); ++index) {
+    const auto& kernel = kernels[index];
+    kernels_file
+        << index << ','
+        << getpid() << ','
+        << kernel.device_id << ','
+        << kernel.context_id << ','
+        << kernel.stream_id << ','
+        << kernel.correlation_id << ','
+        << kernel.start << ','
+        << kernel.end << ','
+        << (kernel.end - kernel.start) << ','
+        << EscapeCsv(kernel.name) << '\n';
+  }
+
+  std::printf(
+      "Timeline CSV: %s\nKernel CSV: %s\n",
+      telemetry_path.c_str(),
+      kernels_path.c_str());
+}
 
 
 /* ------------------------------------------------ */
@@ -53,11 +165,12 @@ void SampleGpuMetrics() {
     unsigned int graphics_clock_mhz = 0;
     nvmlUtilization_t utilization{};
 
-    uint64_t timestamp_ns = 0;
+    uint64_t query_start_ns = 0;
+    uint64_t query_end_ns = 0;
 
-    const CUptiResult timestamp_result =
+    const CUptiResult timestamp_start_result =
         cuptiGetTimestamp(
-            &timestamp_ns);
+            &query_start_ns);
 
     const nvmlReturn_t power_result =
         nvmlDeviceGetPowerUsage(
@@ -81,11 +194,20 @@ void SampleGpuMetrics() {
             NVML_CLOCK_GRAPHICS,
             &graphics_clock_mhz);
 
-    if (timestamp_result == CUPTI_SUCCESS &&
+    const CUptiResult timestamp_end_result =
+        cuptiGetTimestamp(
+            &query_end_ns);
+
+    if (timestamp_start_result == CUPTI_SUCCESS &&
+        timestamp_end_result == CUPTI_SUCCESS &&
         power_result == NVML_SUCCESS &&
         temperature_result == NVML_SUCCESS &&
         utilization_result == NVML_SUCCESS &&
         clock_result == NVML_SUCCESS) {
+
+      const uint64_t timestamp_ns =
+          query_start_ns +
+          (query_end_ns - query_start_ns) / 2;
 
       std::printf(
           "timestamp_ns: %lld | "
@@ -100,6 +222,17 @@ void SampleGpuMetrics() {
           utilization.gpu,
           utilization.memory,
           graphics_clock_mhz);
+
+      telemetry_samples.push_back({
+          timestamp_ns,
+          query_start_ns,
+          query_end_ns,
+          power_mw,
+          temperature_c,
+          utilization.gpu,
+          utilization.memory,
+          graphics_clock_mhz
+      });
 
     } else if (!error_reported) {
 
@@ -209,9 +342,15 @@ void CUPTIAPI BufferCompleted(
           reinterpret_cast<CUpti_ActivityKernel9*>(
               record);
 
+      std::lock_guard<std::mutex> lock(activity_mutex);
       kernels.push_back({
           kernel->start,
-          kernel->end
+          kernel->end,
+          kernel->deviceId,
+          kernel->contextId,
+          kernel->streamId,
+          kernel->correlationId,
+          kernel->name != nullptr ? kernel->name : "unknown"
       });
 
     }
@@ -462,6 +601,16 @@ void ProfilerStop() {
   cuptiActivityFlushAll(
       CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
+  std::sort(
+      kernels.begin(),
+      kernels.end(),
+      [](const KernelEvent& left,
+         const KernelEvent& right) {
+        return left.start < right.start;
+      });
+
+  SaveTimelineCsvFiles();
+
 
   const uint64_t memory_bytes =
       GetProcessMemory(
@@ -653,8 +802,7 @@ void ProfilerStop() {
   -o libnvidia-process-metrics.so */
 
 
-// LD_PRELOAD=$PWD/libnvidia-process-metrics.so \
-python gpu-regression.py
+// LD_PRELOAD=$PWD/libnvidia-process-metrics.so python gpu-regression.py
 
 
 /* LD_PRELOAD=$PWD/nvidia/libnvidia-process-metrics.so \

@@ -153,11 +153,14 @@ struct ParsedArgs
     double durationSeconds = 10.0;
     std::vector<const char*> metrics =
     {
-        "gr__cycles_active.avg",                            // Active Cycles
-        "gr__cycles_elapsed.max",                           // Elapsed Cycles
-        "gpu__time_duration.sum",                           // Duration
-        "sm__inst_executed_realtime.avg.per_cycle_active",  // Inst Executed per Active Cycle
-        "sm__cycles_active.avg"                             // SM Active Cycles
+        "gr__cycles_active.avg",
+        "gr__cycles_elapsed.max",
+        "gpu__time_duration.sum",
+        "sm__inst_executed_realtime.avg.per_cycle_active",
+        "sm__cycles_active.avg",
+        "tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed",
+        "sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed",
+        "sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed"
     };
 };
 

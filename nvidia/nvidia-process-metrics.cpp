@@ -55,6 +55,9 @@ static std::thread* metrics_thread = nullptr;
 constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
 
+constexpr auto METRICS_TAIL_DURATION =
+    std::chrono::milliseconds(200);
+
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
 
 
@@ -157,8 +160,7 @@ void SampleGpuMetrics() {
 
   bool error_reported = false;
 
-  while (metrics_sampling.load(
-      std::memory_order_acquire)) {
+  while (true) {
 
     unsigned int power_mw = 0;
     unsigned int temperature_c = 0;
@@ -242,6 +244,10 @@ void SampleGpuMetrics() {
 
       error_reported = true;
     }
+
+    // Take one final sample after the stop request to bracket the tail.
+    if (!metrics_sampling.load(std::memory_order_acquire))
+      break;
 
     std::this_thread::sleep_for(
         METRICS_SAMPLE_INTERVAL);
@@ -596,10 +602,14 @@ void ProfilerStart() {
 __attribute__((destructor))
 void ProfilerStop() {
 
-  StopGpuMetricsSampling();
-
   cuptiActivityFlushAll(
       CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+
+  // Keep real power samples beyond the last kernel for a full final window.
+  if (metrics_thread != nullptr)
+    std::this_thread::sleep_for(METRICS_TAIL_DURATION);
+
+  StopGpuMetricsSampling();
 
   std::sort(
       kernels.begin(),
@@ -681,15 +691,6 @@ void ProfilerStop() {
       uint64_t window_end =
           window_start +
           window_size_ns;
-
-
-      /*
-       * Last window can be shorter
-       */
-      if (window_end > last_kernel_ns) {
-        window_end =
-            last_kernel_ns;
-      }
 
 
       const uint64_t current_window_ns =

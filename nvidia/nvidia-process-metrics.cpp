@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -59,6 +61,34 @@ constexpr auto METRICS_TAIL_DURATION =
     std::chrono::milliseconds(200);
 
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
+
+
+static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
+  const char* configured =
+      std::getenv("NVIDIA_METRICS_DEVICE");
+
+  if (configured == nullptr || configured[0] == '\0') {
+    *device_index = 0;
+    return true;
+  }
+
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed =
+      std::strtoul(configured, &end, 10);
+
+  if (errno != 0 || end == configured || *end != '\0' ||
+      parsed > std::numeric_limits<unsigned int>::max()) {
+    std::fprintf(
+        stderr,
+        "[NVML] Invalid NVIDIA_METRICS_DEVICE: %s\n",
+        configured);
+    return false;
+  }
+
+  *device_index = static_cast<unsigned int>(parsed);
+  return true;
+}
 
 
 static std::filesystem::path GetOutputDirectory() {
@@ -210,20 +240,6 @@ void SampleGpuMetrics() {
       const uint64_t timestamp_ns =
           query_start_ns +
           (query_end_ns - query_start_ns) / 2;
-
-      std::printf(
-          "timestamp_ns: %lld | "
-          "power: %u mW | "
-          "temperature: %u C | "
-          "gpu: %u %% | "
-          "memory: %u %% | "
-          "graphics_clock: %u MHz\n",
-          static_cast<long long>(timestamp_ns),
-          power_mw,
-          temperature_c,
-          utilization.gpu,
-          utilization.memory,
-          graphics_clock_mhz);
 
       telemetry_samples.push_back({
           timestamp_ns,
@@ -549,18 +565,30 @@ void ProfilerStart() {
 
   /* NVML */
 
-  nvmlReturn_t res =
-      nvmlInit_v2();
+  unsigned int device_index = 0;
 
-  if (NVML_SUCCESS == res) {
+  if (GetConfiguredDeviceIndex(&device_index)) {
+    nvmlReturn_t res =
+        nvmlInit_v2();
 
-    res =
-        nvmlDeviceGetHandleByIndex_v2(
-            0,
-            &device);
+    if (NVML_SUCCESS == res) {
+      res =
+          nvmlDeviceGetHandleByIndex_v2(
+              device_index,
+              &device);
 
-    if (NVML_SUCCESS == res)
-      nvml_initialized = true;
+      if (NVML_SUCCESS == res) {
+        nvml_initialized = true;
+        std::printf("NVML device: %u\n", device_index);
+      } else {
+        std::fprintf(
+            stderr,
+            "[NVML] Cannot select device %u: %s\n",
+            device_index,
+            nvmlErrorString(res));
+        nvmlShutdown();
+      }
+    }
   }
 
 

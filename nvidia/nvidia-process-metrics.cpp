@@ -43,6 +43,8 @@ struct GpuTelemetrySample {
 static std::vector<KernelEvent> kernels;
 static std::vector<GpuTelemetrySample> telemetry_samples;
 static std::mutex activity_mutex;
+static std::atomic<size_t> dropped_activity_records{0};
+static std::atomic<bool> dropped_records_query_failed{false};
 
 static uint64_t bytes_h2d = 0;
 static uint64_t bytes_d2h = 0;
@@ -57,10 +59,17 @@ static std::thread* metrics_thread = nullptr;
 constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
 
-constexpr auto METRICS_TAIL_DURATION =
+constexpr auto METRICS_WINDOW_DURATION =
     std::chrono::milliseconds(200);
 
+constexpr uint64_t METRICS_WINDOW_SIZE_NS =
+    static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            METRICS_WINDOW_DURATION).count());
+
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
+constexpr size_t KERNELS_RESERVE_SIZE = 16384;
+constexpr size_t TELEMETRY_RESERVE_SIZE = 512;
 
 
 static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
@@ -113,6 +122,15 @@ static std::string EscapeCsv(const std::string& value) {
 
   escaped += "\"";
   return escaped;
+}
+
+
+static void PrintCuptiError(
+    const char* operation,
+    CUptiResult result) {
+  const char* message = "unknown CUPTI error";
+  cuptiGetResultString(result, &message);
+  std::fprintf(stderr, "[CUPTI] %s: %s\n", operation, message);
 }
 
 
@@ -342,8 +360,8 @@ void CUPTIAPI BufferRequested(
 /* ------------------------------------------------ */
 
 void CUPTIAPI BufferCompleted(
-    CUcontext,
-    uint32_t,
+    CUcontext context,
+    uint32_t stream_id,
     uint8_t* buffer,
     size_t,
     size_t valid_size) {
@@ -386,6 +404,7 @@ void CUPTIAPI BufferCompleted(
           reinterpret_cast<CUpti_ActivityMemcpy*>(
               record);
 
+      std::lock_guard<std::mutex> lock(activity_mutex);
       switch (copy->copyKind) {
 
         case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
@@ -404,6 +423,25 @@ void CUPTIAPI BufferCompleted(
           break;
       }
     }
+  }
+
+  size_t dropped = 0;
+  const CUptiResult dropped_result =
+      cuptiActivityGetNumDroppedRecords(
+          context,
+          stream_id,
+          &dropped);
+
+  if (dropped_result == CUPTI_SUCCESS) {
+    dropped_activity_records.fetch_add(
+        dropped,
+        std::memory_order_relaxed);
+  } else if (!dropped_records_query_failed.exchange(
+                 true,
+                 std::memory_order_relaxed)) {
+    PrintCuptiError(
+        "Failed to query dropped activity records",
+        dropped_result);
   }
 
   std::free(buffer);
@@ -562,6 +600,9 @@ void ProfilerStart() {
       "PID: %d\n",
       getpid());
 
+  kernels.reserve(KERNELS_RESERVE_SIZE);
+  telemetry_samples.reserve(TELEMETRY_RESERVE_SIZE);
+
 
   /* NVML */
 
@@ -609,11 +650,25 @@ void ProfilerStart() {
   }
 
 
-  cuptiActivityEnable(
+  cupti_result = cuptiActivityEnable(
       CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
 
-  cuptiActivityEnable(
+  if (CUPTI_SUCCESS != cupti_result) {
+    PrintCuptiError(
+        "Failed to enable concurrent kernel activity",
+        cupti_result);
+    return;
+  }
+
+  cupti_result = cuptiActivityEnable(
       CUPTI_ACTIVITY_KIND_MEMCPY);
+
+  if (CUPTI_SUCCESS != cupti_result) {
+    PrintCuptiError(
+        "Failed to enable memory copy activity",
+        cupti_result);
+    return;
+  }
 
 
   std::printf(
@@ -630,12 +685,19 @@ void ProfilerStart() {
 __attribute__((destructor))
 void ProfilerStop() {
 
-  cuptiActivityFlushAll(
-      CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+  const CUptiResult flush_result =
+      cuptiActivityFlushAll(
+          CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+
+  if (flush_result != CUPTI_SUCCESS) {
+    PrintCuptiError(
+        "Failed to flush activity records",
+        flush_result);
+  }
 
   // Keep real power samples beyond the last kernel for a full final window.
   if (metrics_thread != nullptr)
-    std::this_thread::sleep_for(METRICS_TAIL_DURATION);
+    std::this_thread::sleep_for(METRICS_WINDOW_DURATION);
 
   StopGpuMetricsSampling();
 
@@ -666,6 +728,17 @@ void ProfilerStop() {
       "Kernels total: %zu\n",
       kernels.size());
 
+  const size_t dropped =
+      dropped_activity_records.load(
+          std::memory_order_relaxed);
+
+  if (dropped > 0) {
+    std::fprintf(
+        stderr,
+        "[CUPTI] WARNING: %zu activity records were dropped\n",
+        dropped);
+  }
+
   std::printf(
       "GPU memory: %.2f MB\n",
       memory_bytes /
@@ -679,7 +752,7 @@ void ProfilerStop() {
   if (!kernels.empty()) {
 
     const uint64_t window_size_ns =
-        200000000ULL;  // 200 ms
+        METRICS_WINDOW_SIZE_NS;
 
 
     uint64_t first_kernel_ns =

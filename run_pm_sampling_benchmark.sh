@@ -101,6 +101,7 @@ if [[ "${BENCHMARK_NAME}" == "compute" ]]; then
 fi
 
 benchmark_status=0
+NVIDIA_METRICS_DEVICE="${DEVICE}" \
 NVIDIA_METRICS_OUTPUT_DIR="${RESULTS_DIR}" \
 LD_PRELOAD="${METRICS_LIBRARY}" \
   "${BENCHMARK_EXECUTABLE}" "${benchmark_arguments[@]}" \

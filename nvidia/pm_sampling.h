@@ -26,6 +26,16 @@ struct SamplerRange
     std::unordered_map<std::string, double> metricValues;
 };
 
+struct SamplingGapSummary
+{
+    size_t validSamples = 0;
+    uint64_t medianIntervalNs = 0;
+    uint64_t gapThresholdNs = 0;
+    size_t gapCount = 0;
+    uint64_t totalGapNs = 0;
+    uint64_t largestGapNs = 0;
+};
+
 class CuptiProfilerHost
 {
     std::string m_chipName;
@@ -143,6 +153,100 @@ public:
             }
             std::cout << "-----------------------------------------------------------------------------------\n\n";
         }
+    }
+
+    SamplingGapSummary GetSamplingGapSummary() const
+    {
+        SamplingGapSummary summary;
+        std::vector<uint64_t> durations;
+        durations.reserve(m_samplerRanges.size());
+
+        for (const auto& range : m_samplerRanges)
+        {
+            if (range.endTimestamp > range.startTimestamp)
+            {
+                durations.push_back(range.endTimestamp - range.startTimestamp);
+            }
+        }
+
+        if (durations.empty())
+        {
+            return summary;
+        }
+
+        const size_t medianIndex = durations.size() / 2;
+        std::nth_element(
+            durations.begin(), durations.begin() + medianIndex, durations.end());
+        summary.medianIntervalNs = durations[medianIndex];
+        summary.gapThresholdNs = summary.medianIntervalNs * 5;
+
+        std::vector<const SamplerRange*> ranges;
+        ranges.reserve(m_samplerRanges.size());
+        const uint64_t minValidDuration = std::max<uint64_t>(
+            1, summary.medianIntervalNs / 10);
+        const uint64_t maxValidDuration = summary.gapThresholdNs;
+
+        for (const auto& range : m_samplerRanges)
+        {
+            if (range.endTimestamp <= range.startTimestamp)
+            {
+                continue;
+            }
+
+            const uint64_t duration = range.endTimestamp - range.startTimestamp;
+            if (duration >= minValidDuration && duration <= maxValidDuration)
+            {
+                ranges.push_back(&range);
+            }
+        }
+
+        if (ranges.empty())
+        {
+            return summary;
+        }
+
+        std::sort(ranges.begin(), ranges.end(),
+            [](const SamplerRange* lhs, const SamplerRange* rhs) {
+                return lhs->startTimestamp < rhs->startTimestamp;
+            });
+
+        summary.validSamples = ranges.size();
+        uint64_t previousEnd = ranges.front()->endTimestamp;
+        for (size_t index = 1; index < ranges.size(); ++index)
+        {
+            const SamplerRange& range = *ranges[index];
+            if (range.startTimestamp > previousEnd)
+            {
+                const uint64_t gap = range.startTimestamp - previousEnd;
+                if (gap > summary.gapThresholdNs)
+                {
+                    ++summary.gapCount;
+                    summary.totalGapNs += gap;
+                    summary.largestGapNs = std::max(summary.largestGapNs, gap);
+                }
+            }
+            previousEnd = std::max(previousEnd, range.endTimestamp);
+        }
+
+        return summary;
+    }
+
+    void PrintSamplingGapSummary() const
+    {
+        const SamplingGapSummary summary = GetSamplingGapSummary();
+        if (summary.validSamples == 0)
+        {
+            std::cout << "PM sampling continuity: no valid samples\n";
+            return;
+        }
+
+        std::cout << "\n--- PM Sampling continuity ---\n";
+        std::cout << "Valid samples: " << summary.validSamples << "\n";
+        std::cout << "Median PM interval: " << summary.medianIntervalNs << " ns\n";
+        std::cout << "Gaps larger than " << summary.gapThresholdNs << " ns: "
+                  << summary.gapCount << "\n";
+        std::cout << "Total reported gap: " << summary.totalGapNs << " ns\n";
+        std::cout << "Largest reported gap: " << summary.largestGapNs << " ns\n";
     }
 
     void SaveSamplesToCsv(

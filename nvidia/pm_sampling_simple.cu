@@ -147,9 +147,9 @@ struct ParsedArgs
     int queryBaseMetrics = 0;
     int queryMetricProperties = 0;
     std::string chipName;
-    uint64_t samplingInterval = 10000; // 100us
+    uint64_t samplingInterval = 10000; // Requested GPU sysclk interval in ns.
     size_t hardwareBufferSize = 512 * 1024 * 1024; // 512MB
-    uint64_t maxSamples = 10000;
+    uint64_t maxSamples = 100000;
     double durationSeconds = 10.0;
     std::vector<const char*> metrics =
     {
@@ -269,7 +269,8 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     std::vector<uint8_t> counterDataImage;
     CUPTI_API_CALL(cuptiPmSamplingTarget.CreateCounterDataImage(args.maxSamples, args.metrics, counterDataImage));
 
-    CUptiResult threadFuncResult;
+    CUptiResult threadFuncResult = CUPTI_SUCCESS;
+    stopDecodeThread = false;
     // 3. Launch the decode thread
     std::thread decodeThread(DecodeCounterData, std::ref(counterDataImage), std::ref(args.metrics), std::ref(cuptiPmSamplingTarget), std::ref(pmSamplingHost), std::ref(threadFuncResult));
 
@@ -288,10 +289,9 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
 
     // 4. Start the PM sampling and launch the CUDA workload
     CUPTI_API_CALL(cuptiPmSamplingTarget.StartPmSampling());
-    stopDecodeThread = false;
-
     std::cout << "PM Sampling active for " << args.durationSeconds
-              << " seconds..." << std::endl;
+              << " seconds with a " << args.maxSamples
+              << "-sample counter data image..." << std::endl;
     std::this_thread::sleep_for(
         std::chrono::duration<double>(args.durationSeconds));
 
@@ -299,15 +299,18 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     CUPTI_API_CALL(cuptiPmSamplingTarget.StopPmSampling());
     joinDecodeThread();
 
-    // 6. Print the sample ranges for the collected metrics
+    // 6. Report PM sampling continuity before printing the collected ranges.
+    pmSamplingHost.PrintSamplingGapSummary();
+
+    // 7. Print the sample ranges for the collected metrics
     pmSamplingHost.PrintSampleRanges();
 
     pmSamplingHost.SaveSamplesToCsv("pm_sampling.csv", args.metrics);
 
-    // 7. Disable PM sampling for release all the resources allocated in CUPTI
+    // 8. Disable PM sampling for release all the resources allocated in CUPTI
     CUPTI_API_CALL(cuptiPmSamplingTarget.DisablePmSampling());
 
-    // 8. Clean up
+    // 9. Clean up
     cuptiPmSamplingTarget.TearDown();
     pmSamplingHost.TearDown();
     return 0;
@@ -319,7 +322,7 @@ void DecodeCounterData( std::vector<uint8_t>& counterDataImage,
                         CuptiProfilerHost& pmSamplingHost,
                         CUptiResult& result)
 {
-    while (!stopDecodeThread)
+    while (true)
     {
         const char *errstr;
         result = cuptiPmSamplingTarget.DecodePmSamplingData(counterDataImage);
@@ -339,6 +342,21 @@ void DecodeCounterData( std::vector<uint8_t>& counterDataImage,
             cuptiGetResultString(result, &errstr);
             std::cerr << "cuptiPmSamplingGetCounterDataInfo failed with error " << errstr << std::endl;
             return;
+        }
+
+        if (counterDataInfo.numCompletedSamples == 0)
+        {
+            // PM sampling has stopped and a decode returned no ranges, so all
+            // samples pending in the hardware buffer have been drained.
+            if (stopDecodeThread)
+            {
+                return;
+            }
+
+            // Avoid reinitializing an empty image in a tight loop. Repeated
+            // empty resets can add collector overhead without freeing data.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
         }
 
         for (size_t sampleIndex = 0; sampleIndex < counterDataInfo.numCompletedSamples; ++sampleIndex)

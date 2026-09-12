@@ -8,6 +8,7 @@ DEVICE="${DEVICE:-0}"
 BENCHMARK_NAME="${BENCHMARK_NAME:-compute}"
 DURATION_SECONDS="${DURATION_SECONDS:-10}"
 PM_DURATION_SECONDS="${PM_DURATION_SECONDS:-12}"
+PM_MAX_SAMPLES="${PM_MAX_SAMPLES:-100000}"
 WARMUP="${WARMUP:-5}"
 BLOCK_SIZE="${BLOCK_SIZE:-256}"
 ITERATIONS="${ITERATIONS:-10000}"
@@ -53,13 +54,15 @@ sudo -v || exit 1
 
 printf 'Starting PM Sampling for %s seconds on GPU %s...\n' \
   "${PM_DURATION_SECONDS}" "${DEVICE}"
+printf 'PM counter-data capacity: %s samples\n' "${PM_MAX_SAMPLES}"
 printf 'PM Sampling output: %s\n' "${PM_LOG}"
 
 (
   cd "${RESULTS_DIR}" || exit 1
   sudo "${PM_SAMPLER}" \
     --device "${DEVICE}" \
-    --duration "${PM_DURATION_SECONDS}"
+    --duration "${PM_DURATION_SECONDS}" \
+    --maxsamples "${PM_MAX_SAMPLES}"
 ) >"${PM_LOG}" 2>&1 &
 
 pm_pid=$!

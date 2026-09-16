@@ -1,0 +1,14 @@
+[Unit]
+Description=NVIDIA Process Metrics daemon
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/sbin/nvidia-process-metrics-daemon
+Restart=on-failure
+RuntimeDirectory=nvidia-process-metrics
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+option(
+  'build_cuda_components',
+  type : 'boolean',
+  value : false,
+  description : 'Build and install the CUPTI/NVML library and PM sampler.',
+)
+option(
+  'nvidia_toolkit_root',
+  type : 'string',
+  value : '/usr/local/cuda',
+  description : 'CUDA toolkit prefix used when build_cuda_components is enabled.',
+)

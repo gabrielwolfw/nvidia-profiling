@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <sstream>
 #include <string.h>
 #include <stdio.h>
@@ -51,6 +52,12 @@ void vectorAdd(const int *pA, const int *pB, int *pC, int N)
 }
 
 std::atomic<bool> stopDecodeThread(false);
+volatile std::sig_atomic_t stopCollection = 0;
+
+void RequestCollectionStop(int)
+{
+    stopCollection = 1;
+}
 
 const int NUM_OF_ELEMS = 4096*4096*2;
 const int THREAD_PER_BLOCKS = 512;
@@ -289,11 +296,18 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
 
     // 4. Start the PM sampling and launch the CUDA workload
     CUPTI_API_CALL(cuptiPmSamplingTarget.StartPmSampling());
+    stopCollection = 0;
+    std::signal(SIGINT, RequestCollectionStop);
+    std::signal(SIGTERM, RequestCollectionStop);
     std::cout << "PM Sampling active for " << args.durationSeconds
               << " seconds with a " << args.maxSamples
               << "-sample counter data image..." << std::endl;
-    std::this_thread::sleep_for(
-        std::chrono::duration<double>(args.durationSeconds));
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(args.durationSeconds);
+    while (!stopCollection && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 
     // 5. Stop the PM sampling and join the decode thread
     CUPTI_API_CALL(cuptiPmSamplingTarget.StopPmSampling());

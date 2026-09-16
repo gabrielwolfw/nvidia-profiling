@@ -158,6 +158,10 @@ The launcher prints the session and generated paths. Files are stored in:
 └── pm_sampling.log
 ```
 
+The temporary script appends the benchmark name to each CSV, for example
+`gpu_telemetry_compute.csv`. Daemon sessions use the unsuffixed names shown
+above. Always use the file names that exist in the captured directory.
+
 ### Observe an existing PID
 
 This mode captures global PM Sampling while an existing PID remains alive or
@@ -180,7 +184,27 @@ Only one PM Sampling session can be active per GPU.
 
 ## 5. Offline analysis
 
-Activate a Python environment with `matplotlib` before requesting plots:
+The analysis can run on Thor or on a laptop. When capture and analysis use
+different machines, copy the complete session directory after the capture has
+finished. The energy analysis needs the telemetry and kernel CSV files; the
+PM-weighted analysis additionally needs the PM CSV file.
+
+```bash
+# Run on the laptop. Replace the host, source path, and run name as needed.
+mkdir -p results
+scp -r nvidia@<thor-host>:~/klobo/results/<run-id>-compute results/
+```
+
+For a daemon capture, copy the session printed by the launcher instead:
+
+```bash
+mkdir -p results
+scp -r nvidia@<thor-host>:/tmp/nvidia-process-metrics/<uid>/<session-id> \
+  results/<session-id>
+```
+
+Activate a Python environment with `matplotlib` before requesting plots. On a
+new laptop environment, install it once with `python3 -m pip install matplotlib`.
 
 ```bash
 source .venv/bin/activate
@@ -192,6 +216,21 @@ The energy analysis integrates NVML power by time window and attributes it to
 active kernels. With the default `--idle-power-mw 0`, results must be
 interpreted as **Attributed Device Energy**, not physical energy measured
 directly for each kernel.
+
+`--idle-power-mw` is optional. It subtracts a device idle baseline before
+energy attribution. Use `0` when reporting **Attributed Device Energy**. Use
+a measured value only when reporting energy above idle as dynamic energy.
+Measure it on the same GPU, power mode, clock policy, and display state as the
+experiment; do not reuse an idle value from another machine. For example:
+
+```bash
+nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits -l 1
+```
+
+Run this while the GPU is idle, before starting the benchmark. Use the median
+of several readings, converted from watts to milliwatts. For the NVIDIA Jetson
+AGX Thor Developer Kit readings centered around `2.37 W`, pass
+`--idle-power-mw 2370`.
 
 ```bash
 python3 analyze_kernel_energy.py \
@@ -231,5 +270,53 @@ python3 analyze_kernel_pm_metrics.py \
 
 Results are written to `kernel_pm_metrics.csv`, `pm_kernel_summary.csv`,
 `pm_coverage_timeline.png`, and `pm_sampling_gaps.png`.
+
+
+### PM-weighted energy attribution
+
+Pass `kernel_pm_metrics.csv` to the energy analysis to use the PM instruction
+activity metric as an energy-allocation weight. The model uses PM weights only
+when every concurrent kernel has at least 99.9% PM coverage; otherwise it
+preserves the equal-share time-based allocation as a fallback.
+
+```bash
+python3 analyze_kernel_energy.py \
+  --telemetry results/20260911-184551-107039-compute/gpu_telemetry_compute.csv \
+  --kernels results/20260911-184551-107039-compute/kernel_activity_compute.csv \
+  --pm-kernel-metrics results/20260911-184551-107039-compute/pm-kernel-analysis/kernel_pm_metrics.csv \
+  --pm-weight-metric sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed \
+  --pm-min-coverage-pct 99.9 \
+  --window-ms 200 \
+  --output-dir results/20260911-184551-107039-compute/pm-weighted-energy-analysis \
+  --plot
+```
+
+`kernel_energy.csv` adds `pm_coverage_pct`, `pm_energy_weight`,
+`pm_weighted_energy_mj`, and `equal_share_fallback_energy_mj`. The energy
+summary reports how much energy used PM weighting and how much required the
+equal-share fallback.
+
+For a copied daemon session, run the two analysis steps in this order:
+
+```bash
+SESSION=results/<session-id>
+
+python3 analyze_kernel_pm_metrics.py \
+  --pm-samples "$SESSION/pm_sampling.csv" \
+  --kernels "$SESSION/kernel_activity.csv" \
+  --output-dir "$SESSION/pm-kernel-analysis" \
+  --plot
+
+python3 analyze_kernel_energy.py \
+  --telemetry "$SESSION/gpu_telemetry.csv" \
+  --kernels "$SESSION/kernel_activity.csv" \
+  --pm-kernel-metrics "$SESSION/pm-kernel-analysis/kernel_pm_metrics.csv" \
+  --window-ms 200 \
+  --output-dir "$SESSION/pm-weighted-energy-analysis" \
+  --plot
+```
+
+The PM weighting remains an attribution model: NVML power and PM counters are
+device-wide, so keep the GPU free of unrelated workloads during capture.
 
 See [ANALYSIS_GUIDE.txt](ANALYSIS_GUIDE.txt) for CSV and plot interpretation.

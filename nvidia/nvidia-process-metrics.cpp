@@ -55,6 +55,7 @@ static bool nvml_initialized = false;
 
 static std::atomic<bool> metrics_sampling{false};
 static std::thread* metrics_thread = nullptr;
+static std::atomic<bool> profiler_stop_started{false};
 
 constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
@@ -70,6 +71,9 @@ constexpr uint64_t METRICS_WINDOW_SIZE_NS =
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
 constexpr size_t KERNELS_RESERVE_SIZE = 16384;
 constexpr size_t TELEMETRY_RESERVE_SIZE = 512;
+
+
+void ProfilerStop();
 
 
 static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
@@ -379,7 +383,7 @@ void CUPTIAPI BufferCompleted(
         CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
 
       auto* kernel =
-          reinterpret_cast<CUpti_ActivityKernel9*>(
+          reinterpret_cast<CUpti_ActivityKernel10*>(
               record);
 
       std::lock_guard<std::mutex> lock(activity_mutex);
@@ -523,7 +527,12 @@ uint64_t GetActiveKernelTimeInWindow(
 
       events.push_back({
           start,
-          end
+          end,
+          0,
+          0,
+          0,
+          0,
+          {}
       });
     }
   }
@@ -592,6 +601,9 @@ uint64_t GetActiveKernelTimeInWindow(
 
 __attribute__((constructor))
 void ProfilerStart() {
+
+  if (std::atexit(ProfilerStop) != 0)
+    std::fprintf(stderr, "[Profiler] Failed to register exit cleanup\n");
 
   std::printf(
       "\n=== NVIDIA Process Profiler ===\n");
@@ -684,6 +696,9 @@ void ProfilerStart() {
 
 __attribute__((destructor))
 void ProfilerStop() {
+
+  if (profiler_stop_started.exchange(true, std::memory_order_acq_rel))
+    return;
 
   const CUptiResult flush_result =
       cuptiActivityFlushAll(

@@ -219,7 +219,18 @@ int main(int argc, char** argv) {
     waitpid(pid, &status, 0);
     StopSession(options, session_id);
     PrintResults(options, session_id);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    if (WIFEXITED(status)) {
+      const int exit_code = WEXITSTATUS(status);
+      std::cout << "Target exit code: " << exit_code << '\n';
+      return exit_code;
+    }
+    if (WIFSIGNALED(status)) {
+      const int signal_number = WTERMSIG(status);
+      std::cerr << "Target terminated by signal " << signal_number << '\n';
+      return 128 + signal_number;
+    }
+    std::cerr << "Target ended with an unknown wait status\n";
+    return 1;
   } catch (const std::exception& exception) {
     std::cerr << "nvidia-process-metrics-launcher: " << exception.what() << '\n';
     return 1;

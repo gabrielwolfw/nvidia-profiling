@@ -1,0 +1,664 @@
+Num of Passes: 1
+CUDA Device Number: 0
+Compute Capability of Device: 11.0
+PM Sampling active for 180 seconds with a 100000-sample counter data image...
+
+--- PM Sampling continuity ---
+Valid samples: 3775544
+Median PM interval: 6336 ns
+Gaps larger than 31680 ns: 1210
+Total reported gap: 11801459935 ns
+Largest reported gap: 445059880 ns
+Total num of Samples: 3857788
+Printing first 50 samples:
+Sample Index: 0
+Timestamps -> Start: [1788422125568933904] 	End: [1790213673658316737]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                      1759900977155200.000
+gr__cycles_elapsed.max                                               9281746.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 1
+Timestamps -> Start: [1790213673658316737] 	End: [1790213673658348513]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 2
+Timestamps -> Start: [1790213673658348513] 	End: [1790213673658380289]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 3
+Timestamps -> Start: [1790213673658380289] 	End: [1790213673658412001]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 4
+Timestamps -> Start: [1790213673658412001] 	End: [1790213673658443745]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 5
+Timestamps -> Start: [1790213673658443745] 	End: [1790213673658475521]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 6
+Timestamps -> Start: [1790213673658475521] 	End: [1790213673658507265]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 7
+Timestamps -> Start: [1790213673658507265] 	End: [1790213673658539009]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 8
+Timestamps -> Start: [1790213673658539009] 	End: [1790213673658570753]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 9
+Timestamps -> Start: [1790213673658570753] 	End: [1790213673658602497]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 10
+Timestamps -> Start: [1790213673658602497] 	End: [1790213673658634273]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 11
+Timestamps -> Start: [1790213673658634273] 	End: [1790213673658665985]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 12
+Timestamps -> Start: [1790213673658665985] 	End: [1790213673658697760]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 13
+Timestamps -> Start: [1790213673658697760] 	End: [1790213673658729504]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 14
+Timestamps -> Start: [1790213673658729504] 	End: [1790213673658761248]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 15
+Timestamps -> Start: [1790213673658761248] 	End: [1790213673658793024]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 16
+Timestamps -> Start: [1790213673658793024] 	End: [1790213673658824768]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 17
+Timestamps -> Start: [1790213673658824768] 	End: [1790213673658856480]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 18
+Timestamps -> Start: [1790213673658856480] 	End: [1790213673658888256]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 19
+Timestamps -> Start: [1790213673658888256] 	End: [1790213673658920032]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 20
+Timestamps -> Start: [1790213673658920032] 	End: [1790213673658951744]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 21
+Timestamps -> Start: [1790213673658951744] 	End: [1790213673658983488]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 22
+Timestamps -> Start: [1790213673658983488] 	End: [1790213673659015232]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 23
+Timestamps -> Start: [1790213673659015232] 	End: [1790213673659047008]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 24
+Timestamps -> Start: [1790213673659047008] 	End: [1790213673659078784]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 25
+Timestamps -> Start: [1790213673659078784] 	End: [1790213673659110464]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31680.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 26
+Timestamps -> Start: [1790213673659110464] 	End: [1790213673659142240]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 27
+Timestamps -> Start: [1790213673659142240] 	End: [1790213673659173984]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 28
+Timestamps -> Start: [1790213673659173984] 	End: [1790213673659205760]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 29
+Timestamps -> Start: [1790213673659205760] 	End: [1790213673659237504]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 30
+Timestamps -> Start: [1790213673659237504] 	End: [1790213673659269215]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 31
+Timestamps -> Start: [1790213673659269215] 	End: [1790213673659300991]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 32
+Timestamps -> Start: [1790213673659300991] 	End: [1790213673659332767]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 33
+Timestamps -> Start: [1790213673659332767] 	End: [1790213673659364511]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 34
+Timestamps -> Start: [1790213673659364511] 	End: [1790213673659396223]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 35
+Timestamps -> Start: [1790213673659396223] 	End: [1790213673659427967]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 36
+Timestamps -> Start: [1790213673659427967] 	End: [1790213673659459743]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 37
+Timestamps -> Start: [1790213673659459743] 	End: [1790213673659491487]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 38
+Timestamps -> Start: [1790213673659491487] 	End: [1790213673659523199]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 39
+Timestamps -> Start: [1790213673659523199] 	End: [1790213673659554975]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 40
+Timestamps -> Start: [1790213673659554975] 	End: [1790213673659586719]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 41
+Timestamps -> Start: [1790213673659586719] 	End: [1790213673659618495]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 42
+Timestamps -> Start: [1790213673659618495] 	End: [1790213673659650207]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 43
+Timestamps -> Start: [1790213673659650207] 	End: [1790213673659681951]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 44
+Timestamps -> Start: [1790213673659681951] 	End: [1790213673659713727]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 45
+Timestamps -> Start: [1790213673659713727] 	End: [1790213673659745503]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 46
+Timestamps -> Start: [1790213673659745503] 	End: [1790213673659777215]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31712.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 47
+Timestamps -> Start: [1790213673659777215] 	End: [1790213673659808959]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 48
+Timestamps -> Start: [1790213673659808959] 	End: [1790213673659840703]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31744.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+Sample Index: 49
+Timestamps -> Start: [1790213673659840703] 	End: [1790213673659872478]
+-----------------------------------------------------------------------------------
+sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+tpc__warps_inactive_sm_idle_realtime.avg.pct_of_peak_sustained_elapsed                       100.000
+sm__cycles_active.avg                                                      0.000
+sm__inst_executed_realtime.avg.per_cycle_active                            0.000
+gpu__time_duration.sum                                                 31776.000
+gr__cycles_elapsed.max                                                 10001.000
+sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed                         0.000
+gr__cycles_active.avg                                                      0.000
+-----------------------------------------------------------------------------------
+
+PM Sampling CSV saved to: pm_sampling.csv

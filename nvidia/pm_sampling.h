@@ -12,7 +12,7 @@
 #include <fstream>
 
 // CUPTI headers
-#include "helper_cupti.h"
+#include "cuda_api_checks.hpp"
 #include <cupti_target.h>
 #include <cupti_pmsampling.h>
 #include <cupti_profiler_target.h>

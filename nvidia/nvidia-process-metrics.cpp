@@ -383,7 +383,11 @@ void CUPTIAPI BufferCompleted(
         CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
 
       auto* kernel =
+#if CUPTI_API_VERSION <= 26
+          reinterpret_cast<CUpti_ActivityKernel9*>(
+#else
           reinterpret_cast<CUpti_ActivityKernel10*>(
+#endif
               record);
 
       std::lock_guard<std::mutex> lock(activity_mutex);

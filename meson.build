@@ -8,9 +8,7 @@ project(
 if get_option('build_cuda_components')
   cuda_prefix = get_option('nvidia_toolkit_root')
   cuda_include = include_directories(join_paths(cuda_prefix, 'include'))
-  cupti_include = include_directories(
-    join_paths(cuda_prefix, 'extras', 'CUPTI', 'samples', 'common'),
-  )
+  cupti_include = include_directories(join_paths(cuda_prefix, 'include'))
   cuda_libdir = join_paths(cuda_prefix, 'lib64')
   cupti_libdir = cuda_libdir
   profiler_libdir = join_paths(get_option('libdir'), 'nvidia-process-metrics')
@@ -33,10 +31,9 @@ if get_option('build_cuda_components')
     output : 'pm_sampling_simple',
     command : [nvcc, '-std=c++17', '@INPUT@',
                '-I' + join_paths(cuda_prefix, 'include'),
-               '-I' + join_paths(cuda_prefix, 'extras', 'CUPTI', 'samples', 'common'),
                '-L' + cupti_libdir, '-lcupti', '-lcuda', '-Xcompiler', '-pthread',
                '-o', '@OUTPUT@'],
-    depend_files : files('nvidia/pm_sampling.h'),
+    depend_files : files('nvidia/pm_sampling.h', 'nvidia/cuda_api_checks.hpp'),
     build_by_default : true,
     install : true,
     install_dir : profiler_libdir,

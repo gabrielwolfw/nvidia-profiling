@@ -61,6 +61,10 @@ void RequestCollectionStop(int)
 
 const int NUM_OF_ELEMS = 4096*4096*2;
 const int THREAD_PER_BLOCKS = 512;
+// NVIDIA samples conventionally use status 2 when profiling is unsupported
+// by the selected device or environment. Keep that outcome distinct from a
+// program failure without depending on samples/common/helper_cupti.h.
+constexpr int kExitWaived = 2;
 
 
 class VectorLaunchWorkLoad
@@ -522,6 +526,6 @@ void PmSamplingDeviceSupportStatus(CUdevice device)
             ::std::cerr << "\tWSL is not supported" << ::std::endl;
         }
 
-        exit(EXIT_WAIVED);
+        exit(kExitWaived);
     }
 }

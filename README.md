@@ -36,21 +36,19 @@ five seconds.
 Use this path for development and for the temporary
 `run_pm_sampling_benchmark.sh` test. On Thor, CUPTI is installed inside the
 CUDA toolkit: headers and libraries are in `/usr/local/cuda/include` and
-`/usr/local/cuda/lib64`; only `helper_cupti.h` is under
-`extras/CUPTI/samples/common`.
+`/usr/local/cuda/lib64`. The project provides its own CUDA/CUPTI error-checking
+helper and does not depend on files from the CUPTI samples directory.
 
 ```bash
 cd ~/klobo
 g++ -std=c++17 -fPIC -shared nvidia/nvidia-process-metrics.cpp \
   -I/usr/local/cuda/include \
-  -I/usr/local/cuda/extras/CUPTI/samples/common \
   -L/usr/local/cuda/lib64 \
   -lcupti -lnvidia-ml -lcuda -pthread \
   -o nvidia/libnvidia-process-metrics.so
 
 nvcc -std=c++17 nvidia/pm_sampling_simple.cu \
   -I/usr/local/cuda/include \
-  -I/usr/local/cuda/extras/CUPTI/samples/common \
   -L/usr/local/cuda/lib64 \
   -lcupti -lcuda \
   -Xcompiler -pthread \
@@ -278,6 +276,8 @@ directory, using the session ID printed by the launcher.
 ```bash
 source .venv/bin/activate
 SESSION="results/<session-id>"
+
+SESSION="results/65ce5662fe4a8-8480c-a0776b95"
 
 python3 analyze_kernel_pm_metrics.py \
   --pm-samples "$SESSION/pm_sampling.csv" \

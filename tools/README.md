@@ -20,6 +20,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nvidia-process-metrics-daemon
 ```
 
+For GPUs without PM Sampling support, add `-Denable_pm_sampling=false` to the
+`meson setup` command. GPU telemetry and kernel activity remain enabled.
+
 Check that the daemon is ready:
 
 ```bash

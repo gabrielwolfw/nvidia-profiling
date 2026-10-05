@@ -10,3 +10,9 @@ option(
   value : '/usr/local/cuda',
   description : 'CUDA toolkit prefix used when build_cuda_components is enabled.',
 )
+option(
+  'enable_pm_sampling',
+  type : 'boolean',
+  value : true,
+  description : 'Build and enable CUPTI PM Sampling.',
+)

@@ -4,7 +4,11 @@ daemon_sources = files(
   'nvidia-process-metrics-worker.cpp',
 )
 
-linux_cpp_args = ['-D_GNU_SOURCE']
+linux_cpp_args = [
+  '-D_GNU_SOURCE',
+  '-DNVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING=' +
+    (get_option('enable_pm_sampling') ? '1' : '0'),
+]
 
 executable(
   'nvidia-process-metrics-daemon',

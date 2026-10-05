@@ -166,10 +166,12 @@ void ServeClient(int client, NvidiaProcessMetricsSessionManager& manager) {
 
 int main(int argc, char** argv) {
   try {
+#if NVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING
     if (geteuid() != 0) {
       std::cerr << "nvidia-process-metrics-daemon must run as root\n";
       return 1;
     }
+#endif
     const DaemonOptions options = ParseArgs(argc, argv);
     const int listener = CreateListener(options.socket_path);
     NvidiaProcessMetricsSessionManager manager(options.results_root,

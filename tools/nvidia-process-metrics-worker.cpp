@@ -58,6 +58,7 @@ bool NvidiaProcessMetricsWorker::Start(std::string* error) {
     SetState(SessionState::kFailed, *error);
     return false;
   }
+#if NVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING
   SetState(SessionState::kStarting, "starting PM Sampling");
   if (!StartSampler(error)) {
     SetState(SessionState::kFailed, *error);
@@ -68,8 +69,15 @@ bool NvidiaProcessMetricsWorker::Start(std::string* error) {
     SetState(SessionState::kFailed, *error);
     return false;
   }
+#endif
 
-  SetState(SessionState::kRunning, "running");
+  SetState(SessionState::kRunning,
+#if NVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING
+           "running"
+#else
+           "running_without_pm_sampling"
+#endif
+  );
   monitor_thread_ = std::thread(&NvidiaProcessMetricsWorker::Monitor, this);
   return true;
 }

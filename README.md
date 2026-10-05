@@ -124,6 +124,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nvidia-process-metrics-daemon
 ```
 
+On GPUs that do not support PM Sampling, add
+`-Denable_pm_sampling=false` to the `meson setup` command. The daemon will
+still collect GPU telemetry and kernel activity.
+
 For later source changes, run only `meson compile -C build-daemon` and
 `sudo "$(command -v meson)" install -C build-daemon`. Restart the service if
 the daemon executable changed. The manual binaries from step 2 are separate
@@ -246,6 +250,9 @@ nvidia-process-metrics-launcher \
     --simple-io
 ```
 
+
+
+
 A complete capture prints `Target exit code: 0` and paths for
 `gpu_telemetry.csv`, `kernel_activity.csv`, `pm_sampling.csv`, and
 `pm_sampling.log`.
@@ -280,6 +287,7 @@ directory, using the session ID printed by the launcher.
 source .venv/bin/activate
 SESSION="results/<session-id>"
 
+Example:
 SESSION="results/65ce5662fe4a8-8480c-a0776b95"
 
 python3 analyze_kernel_pm_metrics.py \
@@ -334,3 +342,155 @@ For the earlier Thor reading of `2.37 W`, that value was `2370`; measure it
 again for a new setup. Without this option, interpret the output as
 **Attributed Device Energy**. See [ANALYSIS_GUIDE.txt](ANALYSIS_GUIDE.txt) for
 CSV and plot interpretation.
+
+## 7. Install on the `gpu002` V100 node
+
+This cluster requires an explicit GPU type in the Slurm request. The V100
+installation below disables PM Sampling, installs into `~/.local` without
+`sudo`, and keeps the daemon socket and results in `/tmp` on the compute node.
+
+### Copy a clean source tree
+
+```bash
+# Run on the development PC from the user's home directory.
+cd "$HOME"
+git clone --branch nvml-cupti-prof-kernel \
+  https://github.com/gabrielwolfw/nvidia-profiling.git \
+  nvidia-profiling
+cd "$HOME/nvidia-profiling"
+git pull --ff-only
+```
+
+The repository is now located at `~/nvidia-profiling` in the development
+PC's home directory. Create a clean source archive because `scp` does not
+provide exclude patterns. The archive leaves out `.env`, `.venv`, Git
+metadata, build products, plots, data, and previous results.
+
+```bash
+cd "$HOME/nvidia-profiling"
+
+tar -czf /tmp/nvidia-profiling-source.tar.gz \
+  --exclude='./.git' \
+  --exclude='./.vscode' \
+  --exclude='./.env' \
+  --exclude='./.env.*' \
+  --exclude='./.venv' \
+  --exclude='./.venv.*' \
+  --exclude='./__pycache__' \
+  --exclude='./build-daemon' \
+  --exclude='./benchmarks/build' \
+  --exclude='./benchmarks/build-gpu' \
+  --exclude='./nvidia/libnvidia-process-metrics.so' \
+  --exclude='./nvidia/pm_sampling_simple' \
+  --exclude='./data' \
+  --exclude='./plots' \
+  --exclude='./results' \
+  .
+
+scp /tmp/nvidia-profiling-source.tar.gz username@x.x.x.x:~/
+
+ssh username@x.x.x.x 'rm -rf "$HOME/nvidia-profiling" && mkdir -p "$HOME/nvidia-profiling" && tar -xzf "$HOME/nvidia-profiling-source.tar.gz" -C "$HOME/nvidia-profiling" && rm "$HOME/nvidia-profiling-source.tar.gz"'
+```
+
+### Allocate the V100
+
+Connect to the cluster and request one V100 on `gpu002`:
+
+```bash
+ssh username@x.x.x.x
+
+srun \
+  --partition=GPU \
+  --nodelist=gpu002 \
+  --gres=gpu:V100:1 \
+  --time=01:00:00 \
+  --mem=32G \
+  --cpus-per-task=2 \
+  --pty bash
+```
+
+Load CUDA and verify that Slurm assigned the GPU:
+
+```bash
+module load cuda/12.8
+cd ~/nvidia-profiling
+nvidia-smi -L
+```
+
+The last command must display a `Tesla V100` before continuing.
+
+### Build and install without PM Sampling
+
+```bash
+meson setup build-daemon \
+  --prefix="$HOME/.local" \
+  --libdir=lib \
+  -Dbuild_cuda_components=true \
+  -Denable_pm_sampling=false \
+  -Dnvidia_toolkit_root=/orfeo/cephfs/opt/programs/intel/almalinux9/cuda/12.8
+
+meson compile -C build-daemon
+meson install -C build-daemon
+```
+
+This installs the launcher, daemon, and preload library under `~/.local`.
+The configuration should report three Meson build targets and
+`enable_pm_sampling: false`.
+
+### Build all benchmarks
+
+Build CUDA benchmark binaries for V100 (`70`), A100 (`80`), and H100/H200
+(`90`):
+
+```bash
+cmake \
+  -S benchmarks \
+  -B benchmarks/build-gpu \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES='70;80;90'
+
+cmake --build benchmarks/build-gpu -j2
+```
+
+### Start the daemon in `/tmp`
+
+The daemon must be started inside the active GPU allocation before running
+the launcher:
+
+```bash
+mkdir -p "/tmp/nvidia-process-metrics-$UID/results"
+rm -f "/tmp/nvidia-process-metrics-$UID/daemon.sock"
+
+"$HOME/.local/sbin/nvidia-process-metrics-daemon" \
+  --socket "/tmp/nvidia-process-metrics-$UID/daemon.sock" \
+  --results-root "/tmp/nvidia-process-metrics-$UID/results" \
+  >/tmp/nvidia-process-metrics-daemon.log 2>&1 &
+
+sleep 1
+ls -l "/tmp/nvidia-process-metrics-$UID/daemon.sock"
+```
+
+### Verify the installation
+
+```bash
+"$HOME/.local/bin/nvidia-process-metrics-launcher" \
+  --socket "/tmp/nvidia-process-metrics-$UID/daemon.sock" \
+  --library "$HOME/.local/lib/nvidia-process-metrics/libnvidia-process-metrics.so" \
+  --device 0 \
+  --duration 15 \
+  --window-ms 150 \
+  --command -- \
+  ./benchmarks/build-gpu/bench_compute \
+    --duration 10 \
+    --warmup 2
+```
+
+A successful run displays `NVML device: 0`, `STATUS=OK`, a nonzero kernel
+count, and `Target exit code: 0`. Session files are written below:
+
+```text
+/tmp/nvidia-process-metrics-<uid>/results/<uid>/<session-id>/
+```
+
+The `/tmp` directory is node-local and may be cleaned when the allocation or
+node is reset. Copy any results that must be retained before leaving the node.

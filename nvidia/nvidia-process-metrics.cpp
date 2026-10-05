@@ -60,13 +60,9 @@ static std::atomic<bool> profiler_stop_started{false};
 constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
 
-constexpr auto METRICS_WINDOW_DURATION =
-    std::chrono::milliseconds(200);
-
-constexpr uint64_t METRICS_WINDOW_SIZE_NS =
-    static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            METRICS_WINDOW_DURATION).count());
+constexpr int DEFAULT_METRICS_WINDOW_MS = 200;
+static std::chrono::milliseconds metrics_window_duration(
+    DEFAULT_METRICS_WINDOW_MS);
 
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
 constexpr size_t KERNELS_RESERVE_SIZE = 16384;
@@ -100,6 +96,38 @@ static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
   }
 
   *device_index = static_cast<unsigned int>(parsed);
+  return true;
+}
+
+
+static bool GetConfiguredWindowDuration(
+    std::chrono::milliseconds* window_duration) {
+  const char* configured =
+      std::getenv("NVIDIA_METRICS_WINDOW_MS");
+
+  if (configured == nullptr || configured[0] == '\0') {
+    *window_duration =
+        std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
+    return true;
+  }
+
+  char* end = nullptr;
+  errno = 0;
+  const long parsed = std::strtol(configured, &end, 10);
+
+  if (errno != 0 || end == configured || *end != '\0' || parsed <= 0 ||
+      parsed > std::numeric_limits<int>::max()) {
+    std::fprintf(
+        stderr,
+        "[Profiler] Invalid NVIDIA_METRICS_WINDOW_MS: %s; using %d ms\n",
+        configured,
+        DEFAULT_METRICS_WINDOW_MS);
+    *window_duration =
+        std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
+    return false;
+  }
+
+  *window_duration = std::chrono::milliseconds(parsed);
   return true;
 }
 
@@ -619,6 +647,11 @@ void ProfilerStart() {
   kernels.reserve(KERNELS_RESERVE_SIZE);
   telemetry_samples.reserve(TELEMETRY_RESERVE_SIZE);
 
+  GetConfiguredWindowDuration(&metrics_window_duration);
+  std::printf(
+      "Kernel window: %lld ms\n",
+      static_cast<long long>(metrics_window_duration.count()));
+
 
   /* NVML */
 
@@ -716,7 +749,7 @@ void ProfilerStop() {
 
   // Keep real power samples beyond the last kernel for a full final window.
   if (metrics_thread != nullptr)
-    std::this_thread::sleep_for(METRICS_WINDOW_DURATION);
+    std::this_thread::sleep_for(metrics_window_duration);
 
   StopGpuMetricsSampling();
 
@@ -765,13 +798,15 @@ void ProfilerStop() {
 
 
   /* ---------------------------------------------- */
-  /* 200 ms windows                                 */
+  /* Configurable kernel windows                    */
   /* ---------------------------------------------- */
 
   if (!kernels.empty()) {
 
     const uint64_t window_size_ns =
-        METRICS_WINDOW_SIZE_NS;
+        static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                metrics_window_duration).count());
 
 
     uint64_t first_kernel_ns =
@@ -796,7 +831,8 @@ void ProfilerStop() {
 
 
     std::printf(
-        "\n--- 200 ms Kernel Windows ---\n");
+        "\n--- %lld ms Kernel Windows ---\n",
+        static_cast<long long>(metrics_window_duration.count()));
 
 
     uint64_t window_number = 0;

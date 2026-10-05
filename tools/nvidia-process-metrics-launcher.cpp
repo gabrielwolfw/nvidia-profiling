@@ -154,6 +154,8 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
   close(release_fd);
   setenv("NVIDIA_METRICS_OUTPUT_DIR", output_dir.c_str(), 1);
   setenv("NVIDIA_METRICS_DEVICE", std::to_string(options.device).c_str(), 1);
+  setenv("NVIDIA_METRICS_WINDOW_MS",
+         std::to_string(options.window_ms).c_str(), 1);
   const char* existing_preload = getenv("LD_PRELOAD");
   const std::string preload = existing_preload == nullptr
                                   ? options.library_path

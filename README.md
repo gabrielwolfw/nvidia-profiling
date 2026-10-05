@@ -60,13 +60,16 @@ To capture a benchmark without PM Sampling, load the library directly:
 ```bash
 mkdir -p results/manual-compute
 NVIDIA_METRICS_DEVICE=0 \
+NVIDIA_METRICS_WINDOW_MS=200 \
 NVIDIA_METRICS_OUTPUT_DIR="$PWD/results/manual-compute" \
 LD_PRELOAD="$PWD/nvidia/libnvidia-process-metrics.so" \
   ./benchmarks/build/bench_compute --duration 10 --warmup 5
 ```
 
 This produces `gpu_telemetry.csv` and `kernel_activity.csv` in the selected
-result directory.
+result directory. Set `NVIDIA_METRICS_WINDOW_MS` to any positive number of
+milliseconds to adjust the kernel-utilization summary window; it defaults to
+`200` when omitted.
 
 ## 3. Run a benchmark with the shell script
 
@@ -84,7 +87,7 @@ optional variables are:
 
 ```bash
 DEVICE=0 DURATION_SECONDS=10 PM_DURATION_SECONDS=12 \
-PM_MAX_SAMPLES=100000 BENCHMARK_NAME=compute \
+PM_MAX_SAMPLES=100000 WINDOW_MS=500 BENCHMARK_NAME=compute \
   ./run_pm_sampling_benchmark.sh
 ```
 

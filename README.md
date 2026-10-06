@@ -4,6 +4,23 @@ A profiler for NVIDIA GPUs that does not require changing the target's source.
 It combines CUPTI Activity for the kernel timeline, NVML for device telemetry,
 and CUPTI PM Sampling for microarchitectural metrics.
 
+## Platform-aware installation layouts
+
+Linux installation layouts are defined in
+`packaging/supported-platforms.yaml`. The build helper detects the current
+distribution from `/etc/os-release`, or accepts an explicit platform:
+
+```bash
+python3 packaging/scripts/build-package.py detect
+python3 packaging/scripts/build-package.py stage --platform generic-linux
+python3 packaging/scripts/build-package.py stage --platform fedora
+```
+
+`generic-linux` preserves the `/usr/local` installation documented below.
+Fedora stages under `/usr` with `lib64`; Ubuntu stages under `/usr` with its
+multiarch library directory. See `packaging/README.md` for configuration and
+CUDA-free layout validation. Direct Meson builds remain supported.
+
 The examples below use `~/klobo` as the repository on NVIDIA Thor. Run build
 and capture commands from that directory. Run Python analysis on Thor or copy
 the completed result directory to a laptop.

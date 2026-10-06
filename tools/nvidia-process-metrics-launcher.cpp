@@ -1,4 +1,5 @@
 #include "nvidia-process-metrics-ipc.hpp"
+#include "nvidia-process-metrics-config.hpp"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -21,7 +22,7 @@ namespace {
 struct LauncherOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
   std::string library_path =
-      "/usr/local/lib/nvidia-process-metrics/libnvidia-process-metrics.so";
+      NVIDIA_PROCESS_METRICS_LIBRARY_PATH;
   int device = 0;
   int duration_seconds = 10;
   int window_ms = 200;

@@ -16,3 +16,9 @@ option(
   value : true,
   description : 'Build and enable CUPTI PM Sampling.',
 )
+option(
+  'systemd_unit_dir',
+  type : 'string',
+  value : '',
+  description : 'systemd unit installation directory; empty uses <libdir>/systemd/system.',
+)

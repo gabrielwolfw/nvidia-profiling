@@ -1,5 +1,6 @@
 #include "nvidia-process-metrics-ipc.hpp"
 #include "nvidia-process-metrics-session.hpp"
+#include "nvidia-process-metrics-config.hpp"
 
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -26,7 +27,7 @@ struct DaemonOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
   std::filesystem::path results_root = "/tmp/nvidia-process-metrics";
   std::filesystem::path sampler_path =
-      "/usr/local/lib/nvidia-process-metrics/pm_sampling_simple";
+      NVIDIA_PROCESS_METRICS_SAMPLER_PATH;
 };
 
 DaemonOptions ParseArgs(int argc, char** argv) {

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "prefix": "/usr/local",
+    "libdir": "lib",
+    "systemd_unit_dir": "lib/systemd/system",
+    "package_format": "none",
+    "cuda_root": "/usr/local/cuda",
+    "build_cuda_components": true,
+    "enable_pm_sampling": true,
+    "build_packages": ["g++", "meson", "ninja"]
+  },
+  "platforms": {
+    "generic-linux": {
+      "distro_ids": [],
+      "description": "Portable Meson installation under /usr/local"
+    },
+    "fedora": {
+      "distro_ids": ["fedora", "rhel", "centos", "rocky", "almalinux"],
+      "description": "Fedora and RPM-compatible distributions",
+      "package_format": "rpm",
+      "prefix": "/usr",
+      "libdir": "lib64",
+      "systemd_unit_dir": "lib/systemd/system",
+      "build_packages": ["gcc-c++", "meson", "ninja-build", "systemd-rpm-macros"]
+    },
+    "ubuntu": {
+      "distro_ids": ["ubuntu", "debian", "linuxmint", "pop"],
+      "description": "Ubuntu and Debian-compatible distributions",
+      "package_format": "deb",
+      "prefix": "/usr",
+      "libdir": "lib/x86_64-linux-gnu",
+      "systemd_unit_dir": "lib/systemd/system",
+      "build_packages": ["g++", "meson", "ninja-build", "debhelper", "pkg-config"]
+    }
+  }
+}

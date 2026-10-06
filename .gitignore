@@ -1,5 +1,7 @@
 # Prerequisites
 *.d
+*.pyc
+__pycache__/
 
 # Compiled Object files
 *.slo
@@ -43,6 +45,7 @@
 build/
 Build/
 build-*/
+dist/
 
 # CMake generated files
 CMakeFiles/

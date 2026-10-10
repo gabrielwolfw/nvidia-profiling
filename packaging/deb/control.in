@@ -1,0 +1,14 @@
+Source: @PACKAGE_NAME@
+Section: utils
+Priority: optional
+Maintainer: NVIDIA Process Metrics maintainers <noreply@example.invalid>
+Build-Depends: debhelper-compat (= 13), g++, meson, ninja-build, pkg-config
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: @PACKAGE_NAME@
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: NVIDIA GPU process metrics profiler
+ NVIDIA Process Metrics collects CUPTI kernel activity, NVML device telemetry,
+ and, when enabled, CUPTI performance-monitor sampling for profiled processes.

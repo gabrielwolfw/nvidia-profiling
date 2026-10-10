@@ -11,6 +11,12 @@ option(
   description : 'CUDA toolkit prefix used when build_cuda_components is enabled.',
 )
 option(
+  'nvidia_toolkit_target',
+  type : 'string',
+  value : '',
+  description : 'CUDA target prefix (for example targets/aarch64-linux); empty uses the legacy toolkit layout.',
+)
+option(
   'enable_pm_sampling',
   type : 'boolean',
   value : true,

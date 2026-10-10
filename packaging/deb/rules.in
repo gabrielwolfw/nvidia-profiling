@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --buildsystem=meson
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		--prefix=@PREFIX@ \
+		--libdir=@LIBDIR@ \
+		-Dsystemd_unit_dir=@SYSTEMD_UNIT_DIR@ \
+		-Dnvidia_toolkit_root=@CUDA_ROOT@ \
+		-Dnvidia_toolkit_target=@CUDA_TARGET_ROOT@ \
+		-Dbuild_cuda_components=@BUILD_CUDA_COMPONENTS@ \
+		-Denable_pm_sampling=@ENABLE_PM_SAMPLING@
+
+override_dh_shlibdeps:
+	dh_shlibdeps @DH_SHLIBDEPS_ARGS@

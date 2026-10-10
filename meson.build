@@ -25,12 +25,22 @@ configure_file(
 
 if get_option('build_cuda_components')
   cuda_prefix = get_option('nvidia_toolkit_root')
-  cupti_prefix = join_paths(cuda_prefix, 'extras', 'CUPTI')
-  cuda_include = include_directories(join_paths(cuda_prefix, 'include'))
-  cupti_include = include_directories(join_paths(cupti_prefix, 'include'))
-  cuda_libdir = join_paths(cuda_prefix, 'lib64')
+  cuda_target = get_option('nvidia_toolkit_target')
+  if cuda_target == ''
+    cupti_prefix = join_paths(cuda_prefix, 'extras', 'CUPTI')
+    cuda_include_dir = join_paths(cuda_prefix, 'include')
+    cupti_include_dir = join_paths(cupti_prefix, 'include')
+    cuda_libdir = join_paths(cuda_prefix, 'lib64')
+    cupti_libdir = join_paths(cupti_prefix, 'lib64')
+  else
+    cuda_include_dir = join_paths(cuda_target, 'include')
+    cupti_include_dir = cuda_include_dir
+    cuda_libdir = join_paths(cuda_target, 'lib')
+    cupti_libdir = cuda_libdir
+  endif
+  cuda_include = include_directories(cuda_include_dir)
+  cupti_include = include_directories(cupti_include_dir)
   cuda_stub_libdir = join_paths(cuda_libdir, 'stubs')
-  cupti_libdir = join_paths(cupti_prefix, 'lib64')
   profiler_install_dir = join_paths(get_option('libdir'), 'nvidia-process-metrics')
 
   shared_library(
@@ -53,8 +63,8 @@ if get_option('build_cuda_components')
       input : files('nvidia/pm_sampling_simple.cu'),
       output : 'pm_sampling_simple',
       command : [nvcc, '-std=c++17', '@INPUT@',
-                 '-I' + join_paths(cuda_prefix, 'include'),
-                 '-I' + join_paths(cupti_prefix, 'include'),
+                 '-I' + cuda_include_dir,
+                 '-I' + cupti_include_dir,
                  '-L' + cupti_libdir, '-L' + cuda_stub_libdir,
                  '-Xlinker', '-rpath', '-Xlinker', cupti_libdir,
                  '-lcupti', '-lcuda', '-Xcompiler', '-pthread',

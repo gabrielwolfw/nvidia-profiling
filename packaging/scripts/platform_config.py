@@ -20,6 +20,9 @@ REQUIRED_KEYS = {
     "build_cuda_components",
     "enable_pm_sampling",
     "build_packages",
+    "package_name",
+    "package_version",
+    "package_release",
 }
 
 

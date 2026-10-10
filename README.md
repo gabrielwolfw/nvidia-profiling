@@ -14,12 +14,20 @@ distribution from `/etc/os-release`, or accepts an explicit platform:
 python3 packaging/scripts/build-package.py detect
 python3 packaging/scripts/build-package.py stage --platform generic-linux
 python3 packaging/scripts/build-package.py stage --platform fedora
+python3 packaging/scripts/build-package.py rpm --platform fedora
+python3 packaging/scripts/build-package.py deb --platform ubuntu
 ```
 
 `generic-linux` preserves the `/usr/local` installation documented below.
 Fedora stages under `/usr` with `lib64`; Ubuntu stages under `/usr` with its
 multiarch library directory. See `packaging/README.md` for configuration and
 CUDA-free layout validation. Direct Meson builds remain supported.
+
+Rocky Linux and other Enterprise Linux derivatives use `--platform rocky`.
+The ORFEO cluster uses `--platform rocky-orfeo` for the root PM Sampling
+daemon and `--platform rocky-orfeo-user` for the launcher with an unprivileged
+daemon. Load the CUDA module before either build. See `packaging/ORFEO.md` for
+the complete procedures.
 
 The examples below use `~/klobo` as the repository on NVIDIA Thor. Run build
 and capture commands from that directory. Run Python analysis on Thor or copy

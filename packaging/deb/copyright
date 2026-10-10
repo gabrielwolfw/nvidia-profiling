@@ -1,0 +1,13 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: nvidia-process-metrics
+Source: https://github.com/gabrielwolfw/nvidia-profiling
+
+Files: *
+Copyright: NVIDIA Process Metrics contributors
+License: LGPL-2.1
+ This package is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License version 2.1.
+ .
+ The complete license text is installed as
+ /usr/share/common-licenses/LGPL-2.1 on Debian systems and is also included
+ in the upstream LICENSE file.

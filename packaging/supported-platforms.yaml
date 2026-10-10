@@ -5,6 +5,9 @@
     "libdir": "lib",
     "systemd_unit_dir": "lib/systemd/system",
     "package_format": "none",
+    "package_name": "nvidia-process-metrics",
+    "package_version": "0.1.0",
+    "package_release": "1",
     "cuda_root": "/usr/local/cuda",
     "build_cuda_components": true,
     "enable_pm_sampling": true,
@@ -16,22 +19,63 @@
       "description": "Portable Meson installation under /usr/local"
     },
     "fedora": {
-      "distro_ids": ["fedora", "rhel", "centos", "rocky", "almalinux"],
-      "description": "Fedora and RPM-compatible distributions",
+      "distro_ids": ["fedora"],
+      "description": "Fedora Linux",
       "package_format": "rpm",
       "prefix": "/usr",
       "libdir": "lib64",
       "systemd_unit_dir": "lib/systemd/system",
-      "build_packages": ["gcc-c++", "meson", "ninja-build", "systemd-rpm-macros"]
+      "build_packages": ["gcc-c++", "meson", "ninja-build", "rpm-build", "systemd-rpm-macros"]
+    },
+    "rocky": {
+      "distro_ids": ["rocky", "rhel", "centos", "almalinux"],
+      "description": "Rocky Linux and Enterprise Linux-compatible distributions",
+      "package_format": "rpm",
+      "prefix": "/usr",
+      "libdir": "lib64",
+      "systemd_unit_dir": "lib/systemd/system",
+      "build_packages": ["gcc-c++", "meson", "ninja-build", "rpm-build", "systemd-rpm-macros"]
+    },
+    "rocky-orfeo": {
+      "distro_ids": [],
+      "description": "Rocky Linux 9 on ORFEO with root PM Sampling daemon",
+      "package_format": "rpm",
+      "prefix": "/usr",
+      "libdir": "lib64",
+      "systemd_unit_dir": "lib/systemd/system",
+      "cuda_module": "cuda/12.8",
+      "cuda_root": "/orfeo/cephfs/opt/programs/intel/almalinux9/cuda/12.8",
+      "build_packages": ["gcc-c++", "meson", "ninja-build", "rpm-build", "systemd-rpm-macros"]
+    },
+    "rocky-orfeo-user": {
+      "distro_ids": [],
+      "description": "Rocky Linux 9 on ORFEO with an unprivileged user daemon",
+      "package_format": "none",
+      "prefix": "/usr",
+      "libdir": "lib64",
+      "systemd_unit_dir": "lib/systemd/system",
+      "cuda_module": "cuda/12.8",
+      "cuda_root": "/orfeo/cephfs/opt/programs/intel/almalinux9/cuda/12.8",
+      "enable_pm_sampling": false,
+      "build_packages": ["gcc-c++", "meson", "ninja-build"]
     },
     "ubuntu": {
-      "distro_ids": ["ubuntu", "debian", "linuxmint", "pop"],
-      "description": "Ubuntu and Debian-compatible distributions",
+      "distro_ids": ["ubuntu", "linuxmint", "pop"],
+      "description": "Ubuntu and Ubuntu-compatible distributions",
       "package_format": "deb",
       "prefix": "/usr",
-      "libdir": "lib/x86_64-linux-gnu",
+      "libdir": "lib",
       "systemd_unit_dir": "lib/systemd/system",
-      "build_packages": ["g++", "meson", "ninja-build", "debhelper", "pkg-config"]
+      "build_packages": ["g++", "meson", "ninja-build", "debhelper", "dpkg-dev", "pkg-config"]
+    },
+    "debian": {
+      "distro_ids": ["debian"],
+      "description": "Debian GNU/Linux",
+      "package_format": "deb",
+      "prefix": "/usr",
+      "libdir": "lib",
+      "systemd_unit_dir": "lib/systemd/system",
+      "build_packages": ["g++", "meson", "ninja-build", "debhelper", "dpkg-dev", "pkg-config"]
     }
   }
 }

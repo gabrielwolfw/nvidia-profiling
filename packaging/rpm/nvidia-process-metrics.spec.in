@@ -1,0 +1,53 @@
+Name:           @PACKAGE_NAME@
+Version:        @PACKAGE_VERSION@
+Release:        @PACKAGE_RELEASE@%{?dist}
+Summary:        NVIDIA GPU process metrics profiler
+
+License:        LGPL-2.1-only
+Source0:        %{name}-%{version}.tar.gz
+
+BuildRequires:  gcc-c++
+BuildRequires:  meson
+BuildRequires:  ninja-build
+BuildRequires:  systemd-rpm-macros
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
+
+%description
+NVIDIA Process Metrics collects CUPTI kernel activity, NVML device telemetry,
+and, when enabled, CUPTI performance-monitor sampling for profiled processes.
+
+%prep
+%autosetup
+
+%build
+meson setup build \
+  --prefix=@PREFIX@ \
+  --libdir=@LIBDIR@ \
+  -Dsystemd_unit_dir=@SYSTEMD_UNIT_DIR@ \
+  -Dnvidia_toolkit_root=@CUDA_ROOT@ \
+  -Dnvidia_toolkit_target=@CUDA_TARGET_ROOT@ \
+  -Dbuild_cuda_components=@BUILD_CUDA_COMPONENTS@ \
+  -Denable_pm_sampling=@ENABLE_PM_SAMPLING@
+meson compile -C build %{?_smp_mflags}
+
+%install
+meson install -C build --destdir=%{buildroot}
+
+%post
+%systemd_post nvidia-process-metrics-daemon.service
+
+%preun
+%systemd_preun nvidia-process-metrics-daemon.service
+
+%postun
+%systemd_postun_with_restart nvidia-process-metrics-daemon.service
+
+%files
+%license LICENSE
+@FILE_LIST@
+
+%changelog
+* Fri Oct 09 2026 NVIDIA Process Metrics maintainers <noreply@example.invalid> - @PACKAGE_VERSION@-@PACKAGE_RELEASE@
+- Add native RPM and source RPM packaging.

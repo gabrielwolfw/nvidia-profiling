@@ -2,7 +2,9 @@
 """Associate device-level NVML power samples with CUPTI kernel intervals."""
 
 import argparse
+from array import array
 import csv
+import heapq
 import math
 from pathlib import Path
 
@@ -60,19 +62,25 @@ def parse_args():
     return parser.parse_args()
 
 
-def read_csv(path):
-    with path.open(newline="", encoding="utf-8") as source:
-        return list(csv.DictReader(source))
-
-
 def load_telemetry(path):
     samples = []
     skipped = 0
-    for row in read_csv(path):
-        try:
-            samples.append((int(row["timestamp_ns"]), float(row["power_mw"])))
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
+    with path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        required_fields = {"timestamp_ns", "power_mw"}
+        missing_fields = required_fields - set(reader.fieldnames or [])
+        if missing_fields:
+            raise ValueError(
+                "Telemetry CSV is missing columns: "
+                f"{sorted(missing_fields)}"
+            )
+        for row in reader:
+            try:
+                samples.append(
+                    (int(row["timestamp_ns"]), float(row["power_mw"]))
+                )
+            except (TypeError, ValueError):
+                skipped += 1
     if skipped:
         print(f"WARNING: Skipped {skipped} invalid telemetry rows.")
     samples.sort()
@@ -87,79 +95,123 @@ def load_telemetry(path):
     return deduplicated
 
 
-def load_kernels(path):
-    kernels = []
-    skipped = 0
-    for row in read_csv(path):
-        try:
-            start = int(row["start_ns"])
-            end = int(row["end_ns"])
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
-            continue
-        if end <= start:
-            skipped += 1
-            continue
-        row["start_ns"] = start
-        row["end_ns"] = end
-        row["estimated_dynamic_energy_mj"] = 0.0
-        row["pm_weighted_energy_mj"] = 0.0
-        row["equal_share_fallback_energy_mj"] = 0.0
-        row["pm_coverage_pct"] = ""
-        row["pm_energy_weight"] = ""
-        kernels.append(row)
-    if skipped:
-        print(f"WARNING: Skipped {skipped} invalid kernel rows.")
-    kernels.sort(key=lambda row: row["start_ns"])
-    return kernels
-
-
-def apply_pm_kernel_metrics(kernels, path, weight_metric, min_coverage_pct):
-    """Attach valid PM weights to matching CUPTI kernel events.
+def load_pm_kernel_metrics(path, weight_metric, min_coverage_pct):
+    """Load valid PM weights by event ID without loading CSV rows twice.
 
     The PM file is already an offline timestamp join. A weight is used only
     when a kernel has sufficient PM coverage and a positive finite value for
     the selected PM metric. Event IDs are unique within one CUPTI trace.
     """
-    pm_rows = read_csv(path)
-    if not pm_rows:
-        raise ValueError("PM kernel metrics CSV is empty")
-    required_fields = {"event_id", "pm_coverage_pct", weight_metric}
-    missing_fields = required_fields - set(pm_rows[0])
-    if missing_fields:
-        raise ValueError(
-            "PM kernel metrics CSV is missing columns: "
-            f"{sorted(missing_fields)}"
-        )
-
     pm_by_event_id = {}
-    for row in pm_rows:
-        event_id = row.get("event_id")
-        if event_id in pm_by_event_id:
-            raise ValueError(f"Duplicate PM metrics event_id: {event_id}")
-        try:
-            coverage_pct = float(row["pm_coverage_pct"])
-            weight = float(row[weight_metric])
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(coverage_pct) or not math.isfinite(weight):
-            continue
-        pm_by_event_id[event_id] = (coverage_pct, weight)
+    row_count = 0
+    with path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        required_fields = {"event_id", "pm_coverage_pct", weight_metric}
+        missing_fields = required_fields - set(reader.fieldnames or [])
+        if missing_fields:
+            raise ValueError(
+                "PM kernel metrics CSV is missing columns: "
+                f"{sorted(missing_fields)}"
+            )
+        for row in reader:
+            row_count += 1
+            event_id = row.get("event_id")
+            if event_id in pm_by_event_id:
+                raise ValueError(f"Duplicate PM metrics event_id: {event_id}")
+            try:
+                coverage_pct = float(row["pm_coverage_pct"])
+                weight = float(row[weight_metric])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(coverage_pct) or not math.isfinite(weight):
+                continue
+            eligible_weight = (
+                weight
+                if coverage_pct >= min_coverage_pct and weight > 0.0
+                else None
+            )
+            pm_by_event_id[event_id] = (coverage_pct, eligible_weight)
+    if row_count == 0:
+        raise ValueError("PM kernel metrics CSV is empty")
+    return pm_by_event_id
 
-    matched = 0
-    eligible = 0
-    for kernel in kernels:
-        pm_values = pm_by_event_id.get(kernel.get("event_id"))
-        if pm_values is None:
-            continue
-        matched += 1
-        coverage_pct, weight = pm_values
-        kernel["pm_coverage_pct"] = coverage_pct
-        if coverage_pct >= min_coverage_pct and weight > 0.0:
-            kernel["pm_energy_weight"] = weight
-            eligible += 1
 
-    return matched, eligible
+def parse_kernel_row(row):
+    try:
+        start = int(row["start_ns"])
+        end = int(row["end_ns"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if end <= start:
+        return None
+    return start, end
+
+
+def scan_kernel_metadata(path, pm_by_event_id):
+    required_fields = {"event_id", "start_ns", "end_ns"}
+    valid_count = 0
+    skipped = 0
+    first_start = None
+    last_end = None
+    previous_start = None
+    pm_matched = 0
+    pm_eligible = 0
+
+    with path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        missing_fields = required_fields - set(reader.fieldnames or [])
+        if missing_fields:
+            raise ValueError(
+                "Kernel activity CSV is missing columns: "
+                f"{sorted(missing_fields)}"
+            )
+        for row in reader:
+            interval = parse_kernel_row(row)
+            if interval is None:
+                skipped += 1
+                continue
+            start, end = interval
+            if previous_start is not None and start < previous_start:
+                raise ValueError(
+                    "Kernel activity rows must be sorted by start_ns for "
+                    "streaming analysis"
+                )
+            previous_start = start
+            valid_count += 1
+            if first_start is None:
+                first_start = start
+            last_end = end if last_end is None else max(last_end, end)
+
+            pm_values = pm_by_event_id.get(row.get("event_id"))
+            if pm_values is not None:
+                pm_matched += 1
+                if pm_values[1] is not None:
+                    pm_eligible += 1
+
+    if skipped:
+        print(f"WARNING: Skipped {skipped} invalid kernel rows.")
+    return {
+        "count": valid_count,
+        "first_start": first_start,
+        "last_end": last_end,
+        "pm_matched": pm_matched,
+        "pm_eligible": pm_eligible,
+    }
+
+
+def iter_kernels(path, pm_by_event_id):
+    valid_index = 0
+    with path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        for row in reader:
+            interval = parse_kernel_row(row)
+            if interval is None:
+                continue
+            start, end = interval
+            pm_values = pm_by_event_id.get(row.get("event_id"))
+            weight = pm_values[1] if pm_values is not None else None
+            yield valid_index, start, end, weight
+            valid_index += 1
 
 
 def interpolated_power(timestamp, left, right, idle_power_mw):
@@ -200,80 +252,135 @@ def integrate_range(samples, start, end, idle_power_mw):
     return device_energy, dynamic_energy
 
 
-def union_duration_ns(kernels, start, end):
-    intervals = []
-    for kernel in kernels:
-        overlap_start = max(start, kernel["start_ns"])
-        overlap_end = min(end, kernel["end_ns"])
-        if overlap_start < overlap_end:
-            intervals.append((overlap_start, overlap_end))
-    if not intervals:
-        return 0
-    intervals.sort()
-    total = 0
-    current_start, current_end = intervals[0]
-    for interval_start, interval_end in intervals[1:]:
-        if interval_start <= current_end:
-            current_end = max(current_end, interval_end)
-        else:
-            total += current_end - current_start
-            current_start, current_end = interval_start, interval_end
-    return total + current_end - current_start
-
-
-def attribute_energy(samples, kernels, start, end, idle_power_mw):
+def attribute_energy_streaming(
+    samples,
+    kernel_path,
+    pm_by_event_id,
+    start,
+    end,
+    idle_power_mw,
+    window_ns,
+):
+    """Attribute energy with a chronological sweep over kernel boundaries."""
     assigned = 0.0
     unassigned = 0.0
     pm_weighted = 0.0
     fallback = 0.0
+    estimated_energy = array("d")
+    pm_weighted_energy = array("d")
+    fallback_energy = array("d")
+
+    window_count = (end - start + window_ns - 1) // window_ns
+    window_active_ns = array("d", [0.0]) * window_count
+    window_union_end = array("q", [-1]) * window_count
+
+    kernel_iterator = iter_kernels(kernel_path, pm_by_event_id)
+
+    def read_next_kernel():
+        kernel = next(kernel_iterator, None)
+        if kernel is None:
+            return None
+        index, kernel_start, kernel_end, _ = kernel
+        if index != len(estimated_energy):
+            raise RuntimeError("Kernel stream index is not contiguous")
+        estimated_energy.append(0.0)
+        pm_weighted_energy.append(0.0)
+        fallback_energy.append(0.0)
+        if (index + 1) % 1_000_000 == 0:
+            print(
+                f"Attributed timeline for {index + 1} kernel events...",
+                flush=True,
+            )
+
+        clipped_start = max(kernel_start, start)
+        clipped_end = min(kernel_end, end)
+        if clipped_start < clipped_end:
+            first_window = (clipped_start - start) // window_ns
+            last_window = (clipped_end - 1 - start) // window_ns
+            for window_index in range(first_window, last_window + 1):
+                window_start = start + window_index * window_ns
+                window_end = min(window_start + window_ns, end)
+                overlap_start = max(clipped_start, window_start)
+                overlap_end = min(clipped_end, window_end)
+                previous_end = window_union_end[window_index]
+                if overlap_end > previous_end:
+                    uncovered_start = max(overlap_start, previous_end)
+                    window_active_ns[window_index] += (
+                        overlap_end - uncovered_start
+                    )
+                    window_union_end[window_index] = overlap_end
+        return kernel
+
+    next_kernel = read_next_kernel()
+    active = {}
+    end_heap = []
+
     for left, right in zip(samples, samples[1:]):
         segment_start = max(start, left[0])
         segment_end = min(end, right[0])
         if segment_start >= segment_end:
             continue
 
-        candidates = [
-            (index, kernel)
-            for index, kernel in enumerate(kernels)
-            if kernel["start_ns"] < segment_end and kernel["end_ns"] > segment_start
-        ]
-        boundaries = {segment_start, segment_end}
-        for _, kernel in candidates:
-            boundaries.add(max(segment_start, kernel["start_ns"]))
-            boundaries.add(min(segment_end, kernel["end_ns"]))
-        boundaries = sorted(boundaries)
+        cursor = segment_start
+        while cursor < segment_end:
+            while end_heap and end_heap[0][0] <= cursor:
+                _, index = heapq.heappop(end_heap)
+                active.pop(index, None)
 
-        for sub_start, sub_end in zip(boundaries, boundaries[1:]):
-            _, dynamic_energy = interval_energy_mj(
-                sub_start, sub_end, left, right, idle_power_mw
+            while next_kernel is not None and next_kernel[1] <= cursor:
+                index, _, kernel_end, weight = next_kernel
+                if kernel_end > cursor:
+                    active[index] = weight
+                    heapq.heappush(end_heap, (kernel_end, index))
+                next_kernel = read_next_kernel()
+
+            next_start = (
+                next_kernel[1]
+                if next_kernel is not None and next_kernel[1] < segment_end
+                else segment_end
             )
-            midpoint = sub_start + (sub_end - sub_start) // 2
-            active = [
-                index
-                for index, kernel in candidates
-                if kernel["start_ns"] <= midpoint < kernel["end_ns"]
-            ]
+            next_end = end_heap[0][0] if end_heap else segment_end
+            boundary = min(segment_end, next_start, next_end)
+            if boundary <= cursor:
+                raise RuntimeError("Energy attribution sweep did not advance")
+
+            _, dynamic_energy = interval_energy_mj(
+                cursor, boundary, left, right, idle_power_mw
+            )
             if not active:
                 unassigned += dynamic_energy
-                continue
-
-            weights = [kernels[index]["pm_energy_weight"] for index in active]
-            use_pm_weights = all(weight != "" for weight in weights)
-            total_weight = sum(weights) if use_pm_weights else 0.0
-            if total_weight > 0.0:
-                for index, weight in zip(active, weights):
-                    share = dynamic_energy * weight / total_weight
-                    kernels[index]["estimated_dynamic_energy_mj"] += share
-                    kernels[index]["pm_weighted_energy_mj"] += share
-                pm_weighted += dynamic_energy
             else:
-                share = dynamic_energy / len(active)
-                for index in active:
-                    kernels[index]["estimated_dynamic_energy_mj"] += share
-                    kernels[index]["equal_share_fallback_energy_mj"] += share
-                fallback += dynamic_energy
-            assigned += dynamic_energy
-    return assigned, unassigned, pm_weighted, fallback
+                use_pm_weights = all(
+                    weight is not None for weight in active.values()
+                )
+                total_weight = (
+                    sum(active.values()) if use_pm_weights else 0.0
+                )
+                if total_weight > 0.0:
+                    for index, weight in active.items():
+                        share = dynamic_energy * weight / total_weight
+                        estimated_energy[index] += share
+                        pm_weighted_energy[index] += share
+                    pm_weighted += dynamic_energy
+                else:
+                    share = dynamic_energy / len(active)
+                    for index in active:
+                        estimated_energy[index] += share
+                        fallback_energy[index] += share
+                    fallback += dynamic_energy
+                assigned += dynamic_energy
+            cursor = boundary
+
+    return {
+        "assigned": assigned,
+        "unassigned": unassigned,
+        "pm_weighted": pm_weighted,
+        "fallback": fallback,
+        "estimated_energy": estimated_energy,
+        "pm_weighted_energy": pm_weighted_energy,
+        "fallback_energy": fallback_energy,
+        "window_active_ns": window_active_ns,
+    }
 
 
 def pearson(values_x, values_y):
@@ -299,14 +406,16 @@ def pearson(values_x, values_y):
     return sum(x * y for x, y in zip(centered_x, centered_y)) / denominator
 
 
-def build_windows(samples, kernels, start, end, idle_power_mw, window_ns):
+def build_windows(
+    samples, window_active_ns, start, end, idle_power_mw, window_ns
+):
     windows = []
     window_start = start
     index = 0
     while window_start < end:
         window_end = min(window_start + window_ns, end)
         duration_ns = window_end - window_start
-        active_ns = union_duration_ns(kernels, window_start, window_end)
+        active_ns = window_active_ns[index]
         device_energy, dynamic_energy = integrate_range(
             samples, window_start, window_end, idle_power_mw
         )
@@ -335,6 +444,65 @@ def write_csv(path, rows, fieldnames):
         writer = csv.DictWriter(destination, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_kernel_energy_csv(
+    source_path,
+    output_path,
+    pm_by_event_id,
+    estimated_energy,
+    pm_weighted_energy,
+    fallback_energy,
+):
+    fieldnames = [
+        "event_id", "pid", "device_id", "context_id", "stream_id",
+        "correlation_id", "start_ns", "end_ns", "duration_ns",
+        "kernel_name", "estimated_dynamic_energy_mj",
+        "pm_coverage_pct", "pm_energy_weight", "pm_weighted_energy_mj",
+        "equal_share_fallback_energy_mj",
+    ]
+    valid_index = 0
+    with source_path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source)
+        with output_path.open("w", newline="", encoding="utf-8") as destination:
+            writer = csv.DictWriter(
+                destination, fieldnames=fieldnames, extrasaction="ignore"
+            )
+            writer.writeheader()
+            for row in reader:
+                if parse_kernel_row(row) is None:
+                    continue
+                pm_values = pm_by_event_id.get(row.get("event_id"))
+                row["estimated_dynamic_energy_mj"] = (
+                    estimated_energy[valid_index]
+                    if valid_index < len(estimated_energy)
+                    else 0.0
+                )
+                row["pm_coverage_pct"] = (
+                    pm_values[0] if pm_values is not None else ""
+                )
+                row["pm_energy_weight"] = (
+                    pm_values[1]
+                    if pm_values is not None and pm_values[1] is not None
+                    else ""
+                )
+                row["pm_weighted_energy_mj"] = (
+                    pm_weighted_energy[valid_index]
+                    if valid_index < len(pm_weighted_energy)
+                    else 0.0
+                )
+                row["equal_share_fallback_energy_mj"] = (
+                    fallback_energy[valid_index]
+                    if valid_index < len(fallback_energy)
+                    else 0.0
+                )
+                writer.writerow(row)
+                valid_index += 1
+                if valid_index % 1_000_000 == 0:
+                    print(
+                        f"Wrote energy for {valid_index} kernel events...",
+                        flush=True,
+                    )
 
 
 def create_plots(output_dir, windows):
@@ -393,20 +561,24 @@ def main():
         raise ValueError("--window-ms must be at least one nanosecond")
 
     samples = load_telemetry(args.telemetry)
-    kernels = load_kernels(args.kernels)
-    pm_matched_kernels = 0
-    pm_eligible_kernels = 0
+    pm_by_event_id = {}
     if args.pm_kernel_metrics:
-        pm_matched_kernels, pm_eligible_kernels = apply_pm_kernel_metrics(
-            kernels,
+        pm_by_event_id = load_pm_kernel_metrics(
             args.pm_kernel_metrics,
             args.pm_weight_metric,
             args.pm_min_coverage_pct,
         )
-    if kernels:
-        analysis_start = max(samples[0][0], kernels[0]["start_ns"])
-        last_kernel_end = max(kernel["end_ns"] for kernel in kernels)
-        kernel_span_ns = max(0, last_kernel_end - analysis_start)
+    print("Scanning kernel activity metadata...", flush=True)
+    kernel_metadata = scan_kernel_metadata(args.kernels, pm_by_event_id)
+    kernel_count = kernel_metadata["count"]
+    print(f"Validated {kernel_count} kernel events.", flush=True)
+    pm_matched_kernels = kernel_metadata["pm_matched"]
+    pm_eligible_kernels = kernel_metadata["pm_eligible"]
+    if kernel_count:
+        analysis_start = max(samples[0][0], kernel_metadata["first_start"])
+        kernel_span_ns = max(
+            0, kernel_metadata["last_end"] - analysis_start
+        )
         full_window_end = analysis_start + (
             (kernel_span_ns + window_ns - 1) // window_ns
         ) * window_ns
@@ -429,18 +601,34 @@ def main():
     device_energy, dynamic_energy = integrate_range(
         samples, analysis_start, analysis_end, args.idle_power_mw
     )
-    if kernels:
-        assigned, unassigned, pm_weighted_energy, fallback_energy = attribute_energy(
-            samples, kernels, analysis_start, analysis_end, args.idle_power_mw
+    if kernel_count:
+        print("Attributing energy with a chronological sweep...", flush=True)
+        attribution = attribute_energy_streaming(
+            samples,
+            args.kernels,
+            pm_by_event_id,
+            analysis_start,
+            analysis_end,
+            args.idle_power_mw,
+            window_ns,
         )
     else:
-        assigned = 0.0
-        unassigned = dynamic_energy
-        pm_weighted_energy = 0.0
-        fallback_energy = 0.0
+        window_count = (
+            analysis_end - analysis_start + window_ns - 1
+        ) // window_ns
+        attribution = {
+            "assigned": 0.0,
+            "unassigned": dynamic_energy,
+            "pm_weighted": 0.0,
+            "fallback": 0.0,
+            "estimated_energy": array("d"),
+            "pm_weighted_energy": array("d"),
+            "fallback_energy": array("d"),
+            "window_active_ns": array("d", [0.0]) * window_count,
+        }
     windows = build_windows(
         samples,
-        kernels,
+        attribution["window_active_ns"],
         analysis_start,
         analysis_end,
         args.idle_power_mw,
@@ -451,18 +639,23 @@ def main():
     dynamic_power = [row["avg_dynamic_power_mw"] for row in windows]
     energy_correlation = pearson(utilization, dynamic_window_energy)
     power_correlation = pearson(utilization, dynamic_power)
+    assigned = attribution["assigned"]
+    unassigned = attribution["unassigned"]
+    pm_weighted_energy = attribution["pm_weighted"]
+    fallback_energy = attribution["fallback"]
     conservation_error = dynamic_energy - assigned - unassigned
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    kernel_fields = [
-        "event_id", "pid", "device_id", "context_id", "stream_id",
-        "correlation_id", "start_ns", "end_ns", "duration_ns",
-        "kernel_name", "estimated_dynamic_energy_mj",
-        "pm_coverage_pct", "pm_energy_weight", "pm_weighted_energy_mj",
-        "equal_share_fallback_energy_mj",
-    ]
     window_fields = list(windows[0].keys())
-    write_csv(args.output_dir / "kernel_energy.csv", kernels, kernel_fields)
+    print("Writing per-kernel energy results...", flush=True)
+    write_kernel_energy_csv(
+        args.kernels,
+        args.output_dir / "kernel_energy.csv",
+        pm_by_event_id,
+        attribution["estimated_energy"],
+        attribution["pm_weighted_energy"],
+        attribution["fallback_energy"],
+    )
     write_csv(args.output_dir / "energy_windows.csv", windows, window_fields)
 
     summary = [
@@ -496,7 +689,7 @@ def main():
         create_plots(args.output_dir, windows)
 
     print("=== Kernel energy association ===")
-    print(f"Kernels: {len(kernels)}")
+    print(f"Kernels: {kernel_count}")
     print(f"Windows: {len(windows)}")
     print(f"Dynamic energy: {dynamic_energy:.6f} mJ")
     print(f"Assigned to kernels: {assigned:.6f} mJ")
@@ -504,7 +697,7 @@ def main():
     if args.pm_kernel_metrics:
         print(
             "PM-weighted kernels: "
-            f"{pm_eligible_kernels} / {len(kernels)} "
+            f"{pm_eligible_kernels} / {kernel_count} "
             f"(>= {args.pm_min_coverage_pct:.1f}% coverage)"
         )
         print(f"PM-weighted energy: {pm_weighted_energy:.6f} mJ")

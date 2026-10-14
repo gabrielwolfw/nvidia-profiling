@@ -5,17 +5,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <fcntl.h>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
 #include <cupti.h>
+#include <cuda.h>
 #include <nvml.h>
 
 
@@ -29,15 +33,20 @@ struct KernelEvent {
   std::string name;
 };
 
+struct ActiveKernelInterval {
+  uint64_t start;
+  uint64_t end;
+};
+
 struct GpuTelemetrySample {
   uint64_t timestamp_ns;
   uint64_t query_start_ns;
   uint64_t query_end_ns;
-  unsigned int power_mw;
-  unsigned int temperature_c;
-  unsigned int gpu_utilization;
-  unsigned int memory_utilization;
-  unsigned int graphics_clock_mhz;
+  std::optional<unsigned int> power_mw;
+  std::optional<unsigned int> temperature_c;
+  std::optional<unsigned int> gpu_utilization;
+  std::optional<unsigned int> memory_utilization;
+  std::optional<unsigned int> graphics_clock_mhz;
 };
 
 static std::vector<KernelEvent> kernels;
@@ -55,7 +64,13 @@ static bool nvml_initialized = false;
 
 static std::atomic<bool> metrics_sampling{false};
 static std::thread* metrics_thread = nullptr;
-static std::atomic<bool> profiler_stop_started{false};
+static pid_t profiler_owner_pid = -1;
+static int profiler_completion_fd = -1;
+static std::atomic<bool> profiler_failed{false};
+static std::atomic<bool> activity_allocation_error_reported{false};
+
+constexpr char PROFILER_COMPLETION_SUCCESS = '0';
+constexpr char PROFILER_COMPLETION_FAILURE = '1';
 
 constexpr auto METRICS_SAMPLE_INTERVAL =
     std::chrono::milliseconds(50);
@@ -69,10 +84,58 @@ constexpr size_t KERNELS_RESERVE_SIZE = 16384;
 constexpr size_t TELEMETRY_RESERVE_SIZE = 512;
 
 
-void ProfilerStop();
+static void ProfilerStop();
 
 
-static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
+static void InitializeCompletionChannel() {
+  profiler_owner_pid = getpid();
+  const char* configured = std::getenv("NVIDIA_METRICS_COMPLETION_FD");
+  if (configured == nullptr || configured[0] == '\0')
+    return;
+
+  char* end = nullptr;
+  errno = 0;
+  const long parsed = std::strtol(configured, &end, 10);
+  unsetenv("NVIDIA_METRICS_COMPLETION_FD");
+  if (errno != 0 || end == configured || *end != '\0' || parsed < 0 ||
+      parsed > std::numeric_limits<int>::max()) {
+    std::fprintf(stderr, "[Profiler] Invalid completion descriptor: %s\n",
+                 configured);
+    return;
+  }
+
+  const int descriptor = static_cast<int>(parsed);
+  const int flags = fcntl(descriptor, F_GETFD);
+  if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) != 0) {
+    std::fprintf(stderr, "[Profiler] Cannot configure completion descriptor: %s\n",
+                 std::strerror(errno));
+    return;
+  }
+  profiler_completion_fd = descriptor;
+}
+
+
+static void ReportCompletion() {
+  if (profiler_completion_fd < 0 || getpid() != profiler_owner_pid)
+    return;
+
+  const char status = profiler_failed.load(std::memory_order_acquire)
+                          ? PROFILER_COMPLETION_FAILURE
+                          : PROFILER_COMPLETION_SUCCESS;
+  ssize_t written = -1;
+  do {
+    written = write(profiler_completion_fd, &status, sizeof(status));
+  } while (written < 0 && errno == EINTR);
+  if (written != sizeof(status)) {
+    std::fprintf(stderr, "[Profiler] Cannot report completion: %s\n",
+                 written < 0 ? std::strerror(errno) : "short write");
+  }
+  close(profiler_completion_fd);
+  profiler_completion_fd = -1;
+}
+
+
+static bool GetConfiguredDeviceIndex(int* device_index) {
   const char* configured =
       std::getenv("NVIDIA_METRICS_DEVICE");
 
@@ -83,19 +146,54 @@ static bool GetConfiguredDeviceIndex(unsigned int* device_index) {
 
   char* end = nullptr;
   errno = 0;
-  const unsigned long parsed =
-      std::strtoul(configured, &end, 10);
+  const long parsed =
+      std::strtol(configured, &end, 10);
 
-  if (errno != 0 || end == configured || *end != '\0' ||
-      parsed > std::numeric_limits<unsigned int>::max()) {
+  if (errno != 0 || end == configured || *end != '\0' || parsed < 0 ||
+      parsed > std::numeric_limits<int>::max()) {
     std::fprintf(
         stderr,
-        "[NVML] Invalid NVIDIA_METRICS_DEVICE: %s\n",
+        "[Profiler] Invalid NVIDIA_METRICS_DEVICE: %s\n",
         configured);
     return false;
   }
 
-  *device_index = static_cast<unsigned int>(parsed);
+  *device_index = static_cast<int>(parsed);
+  return true;
+}
+
+
+static void PrintCudaError(const char* operation, CUresult result) {
+  const char* name = "CUDA_ERROR_UNKNOWN";
+  const char* message = "unknown CUDA driver error";
+  cuGetErrorName(result, &name);
+  cuGetErrorString(result, &message);
+  std::fprintf(stderr, "[CUDA] %s: %s (%s)\n", operation, name, message);
+}
+
+
+static bool GetCudaPciBusId(int device_index, std::string* pci_bus_id) {
+  CUresult result = cuInit(0);
+  if (result != CUDA_SUCCESS) {
+    PrintCudaError("Cannot initialize the CUDA driver", result);
+    return false;
+  }
+
+  CUdevice cuda_device;
+  result = cuDeviceGet(&cuda_device, device_index);
+  if (result != CUDA_SUCCESS) {
+    PrintCudaError("Cannot select the configured CUDA device", result);
+    return false;
+  }
+
+  char identifier[32]{};
+  result = cuDeviceGetPCIBusId(identifier, sizeof(identifier), cuda_device);
+  if (result != CUDA_SUCCESS) {
+    PrintCudaError("Cannot resolve the CUDA device PCI bus ID", result);
+    return false;
+  }
+
+  *pci_bus_id = identifier;
   return true;
 }
 
@@ -166,7 +264,26 @@ static void PrintCuptiError(
 }
 
 
-static void SaveTimelineCsvFiles() {
+static bool FinishCsvFile(std::ofstream* file,
+                          const std::filesystem::path& path) {
+  file->flush();
+  if (!*file) {
+    std::fprintf(stderr, "[Profiler] Cannot write CSV file %s\n",
+                 path.c_str());
+    file->close();
+    return false;
+  }
+  file->close();
+  if (!*file) {
+    std::fprintf(stderr, "[Profiler] Cannot close CSV file %s\n",
+                 path.c_str());
+    return false;
+  }
+  return true;
+}
+
+
+static bool SaveTimelineCsvFiles() {
   const std::filesystem::path output_directory =
       GetOutputDirectory();
   std::error_code error;
@@ -180,55 +297,86 @@ static void SaveTimelineCsvFiles() {
         "[Profiler] Cannot create output directory %s: %s\n",
         output_directory.c_str(),
         error.message().c_str());
-    return;
+    return false;
   }
+
+  bool success = true;
 
   const auto telemetry_path =
       output_directory / "gpu_telemetry.csv";
   std::ofstream telemetry_file(telemetry_path);
-  telemetry_file <<
-      "timestamp_ns,query_start_ns,query_end_ns,power_mw,temperature_c,"
-      "gpu_utilization_pct,"
-      "memory_utilization_pct,graphics_clock_mhz\n";
+  if (!telemetry_file.is_open()) {
+    std::fprintf(stderr, "[Profiler] Cannot open CSV file %s\n",
+                 telemetry_path.c_str());
+    success = false;
+  } else {
+    telemetry_file <<
+        "timestamp_ns,query_start_ns,query_end_ns,power_mw,temperature_c,"
+        "gpu_utilization_pct,"
+        "memory_utilization_pct,graphics_clock_mhz\n";
 
-  for (const auto& sample : telemetry_samples) {
-    telemetry_file
-        << sample.timestamp_ns << ','
-        << sample.query_start_ns << ','
-        << sample.query_end_ns << ','
-        << sample.power_mw << ','
-        << sample.temperature_c << ','
-        << sample.gpu_utilization << ','
-        << sample.memory_utilization << ','
-        << sample.graphics_clock_mhz << '\n';
+    for (const auto& sample : telemetry_samples) {
+      telemetry_file
+          << sample.timestamp_ns << ','
+          << sample.query_start_ns << ','
+          << sample.query_end_ns << ',';
+      if (sample.power_mw)
+        telemetry_file << *sample.power_mw;
+      telemetry_file << ',';
+      if (sample.temperature_c)
+        telemetry_file << *sample.temperature_c;
+      telemetry_file << ',';
+      if (sample.gpu_utilization)
+        telemetry_file << *sample.gpu_utilization;
+      telemetry_file << ',';
+      if (sample.memory_utilization)
+        telemetry_file << *sample.memory_utilization;
+      telemetry_file << ',';
+      if (sample.graphics_clock_mhz)
+        telemetry_file << *sample.graphics_clock_mhz;
+      telemetry_file << '\n';
+    }
+    if (!FinishCsvFile(&telemetry_file, telemetry_path))
+      success = false;
   }
 
   const auto kernels_path =
       output_directory / "kernel_activity.csv";
   std::ofstream kernels_file(kernels_path);
-  kernels_file <<
-      "event_id,pid,device_id,context_id,stream_id,correlation_id,"
-      "start_ns,end_ns,duration_ns,kernel_name\n";
+  if (!kernels_file.is_open()) {
+    std::fprintf(stderr, "[Profiler] Cannot open CSV file %s\n",
+                 kernels_path.c_str());
+    success = false;
+  } else {
+    kernels_file <<
+        "event_id,pid,device_id,context_id,stream_id,correlation_id,"
+        "start_ns,end_ns,duration_ns,kernel_name\n";
 
-  for (size_t index = 0; index < kernels.size(); ++index) {
-    const auto& kernel = kernels[index];
-    kernels_file
-        << index << ','
-        << getpid() << ','
-        << kernel.device_id << ','
-        << kernel.context_id << ','
-        << kernel.stream_id << ','
-        << kernel.correlation_id << ','
-        << kernel.start << ','
-        << kernel.end << ','
-        << (kernel.end - kernel.start) << ','
-        << EscapeCsv(kernel.name) << '\n';
+    for (size_t index = 0; index < kernels.size(); ++index) {
+      const auto& kernel = kernels[index];
+      kernels_file
+          << index << ','
+          << getpid() << ','
+          << kernel.device_id << ','
+          << kernel.context_id << ','
+          << kernel.stream_id << ','
+          << kernel.correlation_id << ','
+          << kernel.start << ','
+          << kernel.end << ','
+          << (kernel.end - kernel.start) << ','
+          << EscapeCsv(kernel.name) << '\n';
+    }
+    if (!FinishCsvFile(&kernels_file, kernels_path))
+      success = false;
   }
 
-  std::printf(
-      "Timeline CSV: %s\nKernel CSV: %s\n",
-      telemetry_path.c_str(),
-      kernels_path.c_str());
+  if (success) {
+    std::printf(
+        "Timeline CSV: %s\nKernel CSV: %s\n",
+        telemetry_path.c_str(),
+        kernels_path.c_str());
+  }
+  return success;
 }
 
 
@@ -238,7 +386,11 @@ static void SaveTimelineCsvFiles() {
 
 void SampleGpuMetrics() {
 
-  bool error_reported = false;
+  bool timestamp_error_reported = false;
+  bool power_error_reported = false;
+  bool temperature_error_reported = false;
+  bool utilization_error_reported = false;
+  bool clock_error_reported = false;
 
   while (true) {
 
@@ -280,12 +432,29 @@ void SampleGpuMetrics() {
         cuptiGetTimestamp(
             &query_end_ns);
 
+    if (power_result != NVML_SUCCESS && !power_error_reported) {
+      std::fprintf(stderr, "[NVML] Cannot sample power: %s\n",
+                   nvmlErrorString(power_result));
+      power_error_reported = true;
+    }
+    if (temperature_result != NVML_SUCCESS && !temperature_error_reported) {
+      std::fprintf(stderr, "[NVML] Cannot sample temperature: %s\n",
+                   nvmlErrorString(temperature_result));
+      temperature_error_reported = true;
+    }
+    if (utilization_result != NVML_SUCCESS && !utilization_error_reported) {
+      std::fprintf(stderr, "[NVML] Cannot sample utilization: %s\n",
+                   nvmlErrorString(utilization_result));
+      utilization_error_reported = true;
+    }
+    if (clock_result != NVML_SUCCESS && !clock_error_reported) {
+      std::fprintf(stderr, "[NVML] Cannot sample graphics clock: %s\n",
+                   nvmlErrorString(clock_result));
+      clock_error_reported = true;
+    }
+
     if (timestamp_start_result == CUPTI_SUCCESS &&
-        timestamp_end_result == CUPTI_SUCCESS &&
-        power_result == NVML_SUCCESS &&
-        temperature_result == NVML_SUCCESS &&
-        utilization_result == NVML_SUCCESS &&
-        clock_result == NVML_SUCCESS) {
+        timestamp_end_result == CUPTI_SUCCESS) {
 
       const uint64_t timestamp_ns =
           query_start_ns +
@@ -295,20 +464,31 @@ void SampleGpuMetrics() {
           timestamp_ns,
           query_start_ns,
           query_end_ns,
-          power_mw,
-          temperature_c,
-          utilization.gpu,
-          utilization.memory,
-          graphics_clock_mhz
+          power_result == NVML_SUCCESS
+              ? std::optional<unsigned int>(power_mw)
+              : std::nullopt,
+          temperature_result == NVML_SUCCESS
+              ? std::optional<unsigned int>(temperature_c)
+              : std::nullopt,
+          utilization_result == NVML_SUCCESS
+              ? std::optional<unsigned int>(utilization.gpu)
+              : std::nullopt,
+          utilization_result == NVML_SUCCESS
+              ? std::optional<unsigned int>(utilization.memory)
+              : std::nullopt,
+          clock_result == NVML_SUCCESS
+              ? std::optional<unsigned int>(graphics_clock_mhz)
+              : std::nullopt
       });
 
-    } else if (!error_reported) {
-
-      std::fprintf(
-          stderr,
-          "[NVML] One or more local GPU metrics could not be sampled\n");
-
-      error_reported = true;
+    } else if (!timestamp_error_reported) {
+      if (timestamp_start_result != CUPTI_SUCCESS)
+        PrintCuptiError("Cannot timestamp the start of an NVML query",
+                        timestamp_start_result);
+      if (timestamp_end_result != CUPTI_SUCCESS)
+        PrintCuptiError("Cannot timestamp the end of an NVML query",
+                        timestamp_end_result);
+      timestamp_error_reported = true;
     }
 
     // Take one final sample after the stop request to bracket the tail.
@@ -378,12 +558,25 @@ void CUPTIAPI BufferRequested(
     size_t* size,
     size_t* max_records) {
 
-  *buffer =
-      static_cast<uint8_t*>(
-          std::malloc(BUFFER_SIZE));
-
-  *size = BUFFER_SIZE;
+  *buffer = nullptr;
+  *size = 0;
   *max_records = 0;
+
+  uint8_t* requested_buffer =
+      static_cast<uint8_t*>(std::malloc(BUFFER_SIZE));
+  if (requested_buffer == nullptr) {
+    profiler_failed.store(true, std::memory_order_release);
+    if (!activity_allocation_error_reported.exchange(
+            true, std::memory_order_relaxed)) {
+      std::fprintf(stderr,
+                   "[CUPTI] Cannot allocate activity buffer; profiling data "
+                   "will be incomplete\n");
+    }
+    return;
+  }
+
+  *buffer = requested_buffer;
+  *size = BUFFER_SIZE;
 }
 
 
@@ -537,91 +730,52 @@ uint64_t GetProcessMemory(pid_t pid) {
 /* Active kernel time inside window                 */
 /* ------------------------------------------------ */
 
-uint64_t GetActiveKernelTimeInWindow(
+static std::vector<ActiveKernelInterval> MergeActiveKernelIntervals() {
+  std::vector<ActiveKernelInterval> intervals;
+  intervals.reserve(kernels.size());
+
+  for (const auto& kernel : kernels) {
+    if (kernel.start >= kernel.end)
+      continue;
+
+    if (intervals.empty() || kernel.start > intervals.back().end) {
+      intervals.push_back({kernel.start, kernel.end});
+      continue;
+    }
+
+    intervals.back().end = std::max(intervals.back().end, kernel.end);
+  }
+
+  return intervals;
+}
+
+
+static uint64_t GetActiveKernelTimeInWindow(
+    const std::vector<ActiveKernelInterval>& intervals,
+    size_t& interval_index,
     uint64_t window_start,
     uint64_t window_end) {
 
-  std::vector<KernelEvent> events;
-
-  for (const auto& kernel : kernels) {
-
-    const uint64_t start =
-        std::max(
-            kernel.start,
-            window_start);
-
-    const uint64_t end =
-        std::min(
-            kernel.end,
-            window_end);
-
-    if (start < end) {
-
-      events.push_back({
-          start,
-          end,
-          0,
-          0,
-          0,
-          0,
-          {}
-      });
-    }
-  }
-
-
-  if (events.empty())
-    return 0;
-
-
-  std::sort(
-      events.begin(),
-      events.end(),
-      [](const KernelEvent& a,
-         const KernelEvent& b) {
-
-        return a.start < b.start;
-      });
-
-
   uint64_t total = 0;
-
-  uint64_t current_start =
-      events[0].start;
-
-  uint64_t current_end =
-      events[0].end;
-
-
-  for (size_t i = 1;
-       i < events.size();
-       ++i) {
-
-    if (events[i].start <= current_end) {
-
-      current_end =
-          std::max(
-              current_end,
-              events[i].end);
-
-    } else {
-
-      total +=
-          current_end -
-          current_start;
-
-      current_start =
-          events[i].start;
-
-      current_end =
-          events[i].end;
-    }
+  while (interval_index < intervals.size() &&
+         intervals[interval_index].end <= window_start) {
+    ++interval_index;
   }
 
+  size_t index = interval_index;
+  while (index < intervals.size() && intervals[index].start < window_end) {
+    const uint64_t overlap_start =
+        std::max(intervals[index].start, window_start);
+    const uint64_t overlap_end =
+        std::min(intervals[index].end, window_end);
+    total += overlap_end - overlap_start;
 
-  total +=
-      current_end -
-      current_start;
+    if (intervals[index].end > window_end)
+      break;
+
+    ++index;
+    interval_index = index;
+  }
 
   return total;
 }
@@ -631,11 +785,9 @@ uint64_t GetActiveKernelTimeInWindow(
 /* Library loaded                                   */
 /* ------------------------------------------------ */
 
-__attribute__((constructor))
-void ProfilerStart() {
+static void ProfilerStart() {
 
-  if (std::atexit(ProfilerStop) != 0)
-    std::fprintf(stderr, "[Profiler] Failed to register exit cleanup\n");
+  InitializeCompletionChannel();
 
   std::printf(
       "\n=== NVIDIA Process Profiler ===\n");
@@ -655,28 +807,32 @@ void ProfilerStart() {
 
   /* NVML */
 
-  unsigned int device_index = 0;
+  int device_index = 0;
 
   if (GetConfiguredDeviceIndex(&device_index)) {
-    nvmlReturn_t res =
-        nvmlInit_v2();
-
-    if (NVML_SUCCESS == res) {
-      res =
-          nvmlDeviceGetHandleByIndex_v2(
-              device_index,
-              &device);
+    std::string pci_bus_id;
+    if (GetCudaPciBusId(device_index, &pci_bus_id)) {
+      nvmlReturn_t res = nvmlInit_v2();
 
       if (NVML_SUCCESS == res) {
-        nvml_initialized = true;
-        std::printf("NVML device: %u\n", device_index);
+        res = nvmlDeviceGetHandleByPciBusId_v2(pci_bus_id.c_str(), &device);
+
+        if (NVML_SUCCESS == res) {
+          nvml_initialized = true;
+          std::printf("CUDA device: %d; NVML PCI device: %s\n",
+                      device_index, pci_bus_id.c_str());
+        } else {
+          std::fprintf(
+              stderr,
+              "[NVML] Cannot match CUDA device %d at PCI bus %s: %s\n",
+              device_index,
+              pci_bus_id.c_str(),
+              nvmlErrorString(res));
+          nvmlShutdown();
+        }
       } else {
-        std::fprintf(
-            stderr,
-            "[NVML] Cannot select device %u: %s\n",
-            device_index,
-            nvmlErrorString(res));
-        nvmlShutdown();
+        std::fprintf(stderr, "[NVML] Cannot initialize NVML: %s\n",
+                     nvmlErrorString(res));
       }
     }
   }
@@ -695,6 +851,7 @@ void ProfilerStart() {
         stderr,
         "[CUPTI] Failed to register callbacks\n");
 
+    profiler_failed = true;
     return;
   }
 
@@ -706,6 +863,7 @@ void ProfilerStart() {
     PrintCuptiError(
         "Failed to enable concurrent kernel activity",
         cupti_result);
+    profiler_failed = true;
     return;
   }
 
@@ -716,6 +874,7 @@ void ProfilerStart() {
     PrintCuptiError(
         "Failed to enable memory copy activity",
         cupti_result);
+    profiler_failed = true;
     return;
   }
 
@@ -728,13 +887,12 @@ void ProfilerStart() {
 
 
 /* ------------------------------------------------ */
-/* Library unloaded                                 */
+/* Profiler shutdown                                */
 /* ------------------------------------------------ */
 
-__attribute__((destructor))
-void ProfilerStop() {
+static void ProfilerStop() {
 
-  if (profiler_stop_started.exchange(true, std::memory_order_acq_rel))
+  if (profiler_owner_pid >= 0 && getpid() != profiler_owner_pid)
     return;
 
   const CUptiResult flush_result =
@@ -745,6 +903,7 @@ void ProfilerStop() {
     PrintCuptiError(
         "Failed to flush activity records",
         flush_result);
+    profiler_failed = true;
   }
 
   // Keep real power samples beyond the last kernel for a full final window.
@@ -761,7 +920,8 @@ void ProfilerStop() {
         return left.start < right.start;
       });
 
-  SaveTimelineCsvFiles();
+  if (!SaveTimelineCsvFiles())
+    profiler_failed = true;
 
 
   const uint64_t memory_bytes =
@@ -803,6 +963,9 @@ void ProfilerStop() {
 
   if (!kernels.empty()) {
 
+    const std::vector<ActiveKernelInterval> active_kernel_intervals =
+        MergeActiveKernelIntervals();
+
     const uint64_t window_size_ns =
         static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -836,6 +999,7 @@ void ProfilerStop() {
 
 
     uint64_t window_number = 0;
+    size_t active_interval_index = 0;
 
 
     for (uint64_t window_start =
@@ -856,6 +1020,8 @@ void ProfilerStop() {
 
       const uint64_t active_ns =
           GetActiveKernelTimeInWindow(
+              active_kernel_intervals,
+              active_interval_index,
               window_start,
               window_end);
 
@@ -943,7 +1109,30 @@ void ProfilerStop() {
 
   std::printf(
       "=======================\n");
+
+  ReportCompletion();
 }
+
+
+class ProfilerLifecycle {
+ public:
+  ProfilerLifecycle() {
+    ProfilerStart();
+  }
+
+  ~ProfilerLifecycle() {
+    ProfilerStop();
+  }
+
+  ProfilerLifecycle(const ProfilerLifecycle&) = delete;
+  ProfilerLifecycle& operator=(const ProfilerLifecycle&) = delete;
+};
+
+
+// This object must remain after the profiler state declarations in this
+// translation unit. C++ destroys it first, ensuring ProfilerStop() joins the
+// sampling thread before the vectors and synchronization objects are destroyed.
+static ProfilerLifecycle profiler_lifecycle;
 
 
 /* g++ -std=c++17 -fPIC -shared \

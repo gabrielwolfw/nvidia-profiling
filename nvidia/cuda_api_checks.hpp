@@ -4,8 +4,8 @@
 #include <cuda_runtime_api.h>
 #include <cupti.h>
 
-#include <cstdio>
-#include <cstdlib>
+#include <stdexcept>
+#include <string>
 
 namespace nvidia_process_metrics {
 
@@ -14,9 +14,8 @@ inline void CheckCupti(CUptiResult result, const char* expression,
   if (result == CUPTI_SUCCESS) return;
   const char* message = "unknown CUPTI error";
   cuptiGetResultString(result, &message);
-  std::fprintf(stderr, "%s:%d: %s failed: %s\n", file, line, expression,
-               message);
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
+                           ": " + expression + " failed: " + message);
 }
 
 inline void CheckCudaDriver(CUresult result, const char* expression,
@@ -26,17 +25,17 @@ inline void CheckCudaDriver(CUresult result, const char* expression,
   const char* message = "unknown CUDA driver error";
   cuGetErrorName(result, &name);
   cuGetErrorString(result, &message);
-  std::fprintf(stderr, "%s:%d: %s failed: %s (%s)\n", file, line,
-               expression, name, message);
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
+                           ": " + expression + " failed: " + name + " (" +
+                           message + ")");
 }
 
 inline void CheckCudaRuntime(cudaError_t result, const char* expression,
                              const char* file, int line) {
   if (result == cudaSuccess) return;
-  std::fprintf(stderr, "%s:%d: %s failed: %s\n", file, line, expression,
-               cudaGetErrorString(result));
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
+                           ": " + expression + " failed: " +
+                           cudaGetErrorString(result));
 }
 
 }  // namespace nvidia_process_metrics

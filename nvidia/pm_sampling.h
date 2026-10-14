@@ -2,14 +2,17 @@
 // Copyright 2024 NVIDIA Corporation. All rights reserved
 //
 
+#pragma once
+
 // System headers
+#include <cstdlib>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <stdexcept>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
-#include <fstream>
 
 // CUPTI headers
 #include "cuda_api_checks.hpp"
@@ -20,7 +23,6 @@
 
 struct SamplerRange
 {
-    size_t rangeIndex;
     uint64_t startTimestamp;
     uint64_t endTimestamp;
     std::unordered_map<std::string, double> metricValues;
@@ -44,7 +46,13 @@ class CuptiProfilerHost
 
 public:
     CuptiProfilerHost() = default;
-    ~CuptiProfilerHost() = default;
+    ~CuptiProfilerHost() noexcept
+    {
+        DeinitializeNoThrow();
+    }
+
+    CuptiProfilerHost(const CuptiProfilerHost&) = delete;
+    CuptiProfilerHost& operator=(const CuptiProfilerHost&) = delete;
 
     void SetUp(std::string chipName, std::vector<uint8_t>& counterAvailibilityImage)
     {
@@ -54,7 +62,10 @@ public:
 
     void TearDown()
     {
-        CUPTI_API_CALL(Deinitialize());
+        if (m_pHostObject != nullptr)
+        {
+            CUPTI_API_CALL(Deinitialize());
+        }
     }
 
     CUptiResult CreateConfigImage(std::vector<const char*> metricsList, std::vector<uint8_t>& configImage)
@@ -249,23 +260,17 @@ public:
         std::cout << "Largest reported gap: " << summary.largestGapNs << " ns\n";
     }
 
-    void SaveSamplesToCsv(
+    bool SaveSamplesToCsv(
         const std::string& filename,
         const std::vector<const char*>& metricsList)
     {
-        if (m_samplerRanges.empty())
-        {
-            std::cout << "No samples to save\n";
-            return;
-        }
-
         std::ofstream file(filename);
 
         if (!file.is_open())
         {
             std::cerr << "Error opening CSV file: "
                     << filename << "\n";
-            return;
+            return false;
         }
 
         // CSV header
@@ -313,10 +318,25 @@ public:
             file << "\n";
         }
 
+        file.flush();
+        if (!file)
+        {
+            std::cerr << "Error writing PM Sampling CSV file: "
+                    << filename << "\n";
+            return false;
+        }
+
         file.close();
+        if (!file)
+        {
+            std::cerr << "Error closing PM Sampling CSV file: "
+                    << filename << "\n";
+            return false;
+        }
 
         std::cout << "PM Sampling CSV saved to: "
                 << filename << "\n";
+        return true;
     }
     
 
@@ -374,17 +394,45 @@ private:
         hostInitializeParams.profilerType = CUPTI_PROFILER_TYPE_PM_SAMPLING;
         hostInitializeParams.pChipName = m_chipName.c_str();
         hostInitializeParams.pCounterAvailabilityImage = counterAvailibilityImage.data();
-        CUPTI_API_CALL(cuptiProfilerHostInitialize(&hostInitializeParams));
-        m_pHostObject = hostInitializeParams.pHostObject;
-        return CUPTI_SUCCESS;
+        const CUptiResult result =
+            cuptiProfilerHostInitialize(&hostInitializeParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_pHostObject = hostInitializeParams.pHostObject;
+        }
+        return result;
     }
 
     CUptiResult Deinitialize()
     {
         CUpti_Profiler_Host_Deinitialize_Params deinitializeParams = {CUpti_Profiler_Host_Deinitialize_Params_STRUCT_SIZE};
         deinitializeParams.pHostObject = m_pHostObject;
-        CUPTI_API_CALL(cuptiProfilerHostDeinitialize(&deinitializeParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result =
+            cuptiProfilerHostDeinitialize(&deinitializeParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_pHostObject = nullptr;
+        }
+        return result;
+    }
+
+    void DeinitializeNoThrow() noexcept
+    {
+        if (m_pHostObject == nullptr)
+        {
+            return;
+        }
+        CUpti_Profiler_Host_Deinitialize_Params params = {
+            CUpti_Profiler_Host_Deinitialize_Params_STRUCT_SIZE};
+        params.pHostObject = m_pHostObject;
+        const CUptiResult result = cuptiProfilerHostDeinitialize(&params);
+        if (result != CUPTI_SUCCESS)
+        {
+            const char* message = "unknown CUPTI error";
+            cuptiGetResultString(result, &message);
+            std::cerr << "CUPTI host cleanup failed: " << message << "\n";
+        }
+        m_pHostObject = nullptr;
     }
 };
 
@@ -392,10 +440,19 @@ private:
 class CuptiPmSampling
 {
     CUpti_PmSampling_Object* m_pmSamplerObject = nullptr;
+    bool m_profilerInitialized = false;
+    bool m_samplingEnabled = false;
+    bool m_samplingStarted = false;
 
 public:
     CuptiPmSampling() = default;
-    ~CuptiPmSampling() = default;
+    ~CuptiPmSampling() noexcept
+    {
+        TearDownNoThrow();
+    }
+
+    CuptiPmSampling(const CuptiPmSampling&) = delete;
+    CuptiPmSampling& operator=(const CuptiPmSampling&) = delete;
 
     void SetUp(int deviceIndex)
     {
@@ -410,8 +467,8 @@ public:
             std::cout << "Compute Capability of Device: " << computeCapabilityMajor << "." << computeCapabilityMinor << "\n";
             if (computeCapabilityMajor * 10 + computeCapabilityMinor < 75)
             {
-                std::cerr << "Sample not supported as it requires compute capability >= 7.5\n";
-                exit(0);
+                throw std::runtime_error(
+                    "PM sampling requires compute capability >= 7.5");
             }
         }
 
@@ -420,7 +477,10 @@ public:
 
     void TearDown()
     {
-        CUPTI_API_CALL(DeInitializeProfiler());
+        if (m_profilerInitialized)
+        {
+            CUPTI_API_CALL(DeInitializeProfiler());
+        }
     }
 
     CUptiResult CreateCounterDataImage( uint64_t maxSamples, std::vector<const char*> metricsList, std::vector<uint8_t>& counterDataImage)
@@ -455,17 +515,26 @@ public:
     {
         CUpti_PmSampling_Enable_Params enableParams {CUpti_PmSampling_Enable_Params_STRUCT_SIZE};
         enableParams.deviceIndex = devIndex;
-        CUPTI_API_CALL(cuptiPmSamplingEnable(&enableParams));
-        m_pmSamplerObject = enableParams.pPmSamplingObject;
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiPmSamplingEnable(&enableParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_pmSamplerObject = enableParams.pPmSamplingObject;
+            m_samplingEnabled = true;
+        }
+        return result;
     }
 
     CUptiResult DisablePmSampling()
     {
         CUpti_PmSampling_Disable_Params disableParams {CUpti_PmSampling_Disable_Params_STRUCT_SIZE};
         disableParams.pPmSamplingObject = m_pmSamplerObject;
-        CUPTI_API_CALL(cuptiPmSamplingDisable(&disableParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiPmSamplingDisable(&disableParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_pmSamplerObject = nullptr;
+            m_samplingEnabled = false;
+        }
+        return result;
     }
 
     CUptiResult SetConfig(std::vector<uint8_t>& configImage, size_t hardwareBufferSize, uint64_t samplingInterval)
@@ -488,16 +557,24 @@ public:
     {
         CUpti_PmSampling_Start_Params startProfilingParams = {CUpti_PmSampling_Start_Params_STRUCT_SIZE};
         startProfilingParams.pPmSamplingObject = m_pmSamplerObject;
-        CUPTI_API_CALL(cuptiPmSamplingStart(&startProfilingParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiPmSamplingStart(&startProfilingParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_samplingStarted = true;
+        }
+        return result;
     }
 
     CUptiResult StopPmSampling()
     {
         CUpti_PmSampling_Stop_Params stopProfilingParams = {CUpti_PmSampling_Stop_Params_STRUCT_SIZE};
         stopProfilingParams.pPmSamplingObject = m_pmSamplerObject;
-        CUPTI_API_CALL(cuptiPmSamplingStop(&stopProfilingParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiPmSamplingStop(&stopProfilingParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_samplingStarted = false;
+        }
+        return result;
     }
 
     CUptiResult DecodePmSamplingData(std::vector<uint8_t>& counterDataImage)
@@ -520,10 +597,32 @@ public:
         CUpti_Profiler_Initialize_Params profilerInitializeParams = { CUpti_Profiler_Initialize_Params_STRUCT_SIZE };
         CUPTI_API_CALL(cuptiProfilerInitialize(&profilerInitializeParams));
 
-        CUpti_Device_GetChipName_Params getChipNameParams = { CUpti_Device_GetChipName_Params_STRUCT_SIZE };
-        getChipNameParams.deviceIndex = deviceIndex;
-        CUPTI_API_CALL(cuptiDeviceGetChipName(&getChipNameParams));
-        chipName = getChipNameParams.pChipName;
+        try
+        {
+            CUpti_Device_GetChipName_Params getChipNameParams = { CUpti_Device_GetChipName_Params_STRUCT_SIZE };
+            getChipNameParams.deviceIndex = deviceIndex;
+            CUPTI_API_CALL(cuptiDeviceGetChipName(&getChipNameParams));
+            chipName = getChipNameParams.pChipName;
+        }
+        catch (...)
+        {
+            CUpti_Profiler_DeInitialize_Params profilerDeInitializeParams = {
+                CUpti_Profiler_DeInitialize_Params_STRUCT_SIZE};
+            const CUptiResult cleanupResult =
+                cuptiProfilerDeInitialize(&profilerDeInitializeParams);
+            if (cleanupResult != CUPTI_SUCCESS)
+            {
+                const char* message = "unknown CUPTI error";
+                cuptiGetResultString(cleanupResult, &message);
+                std::cerr << "cuptiProfilerDeInitialize failed during cleanup: "
+                          << message << "\n";
+            }
+            throw;
+        }
+
+        CUpti_Profiler_DeInitialize_Params profilerDeInitializeParams = {
+            CUpti_Profiler_DeInitialize_Params_STRUCT_SIZE};
+        CUPTI_API_CALL(cuptiProfilerDeInitialize(&profilerDeInitializeParams));
         return CUPTI_SUCCESS;
     }
 
@@ -544,14 +643,65 @@ private:
     CUptiResult InitializeProfiler()
     {
         CUpti_Profiler_Initialize_Params profilerInitializeParams = { CUpti_Profiler_Initialize_Params_STRUCT_SIZE };
-        CUPTI_API_CALL(cuptiProfilerInitialize(&profilerInitializeParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiProfilerInitialize(&profilerInitializeParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_profilerInitialized = true;
+        }
+        return result;
     }
 
     CUptiResult DeInitializeProfiler()
     {
         CUpti_Profiler_DeInitialize_Params profilerDeInitializeParams = { CUpti_Profiler_DeInitialize_Params_STRUCT_SIZE };
-        CUPTI_API_CALL(cuptiProfilerDeInitialize(&profilerDeInitializeParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result =
+            cuptiProfilerDeInitialize(&profilerDeInitializeParams);
+        if (result == CUPTI_SUCCESS)
+        {
+            m_profilerInitialized = false;
+        }
+        return result;
+    }
+
+    void ReportCleanupError(const char* operation, CUptiResult result) noexcept
+    {
+        if (result == CUPTI_SUCCESS)
+        {
+            return;
+        }
+        const char* message = "unknown CUPTI error";
+        cuptiGetResultString(result, &message);
+        std::cerr << operation << " failed during cleanup: " << message << "\n";
+    }
+
+    void TearDownNoThrow() noexcept
+    {
+        if (m_samplingStarted)
+        {
+            CUpti_PmSampling_Stop_Params params = {
+                CUpti_PmSampling_Stop_Params_STRUCT_SIZE};
+            params.pPmSamplingObject = m_pmSamplerObject;
+            ReportCleanupError("cuptiPmSamplingStop",
+                               cuptiPmSamplingStop(&params));
+            m_samplingStarted = false;
+        }
+        if (m_samplingEnabled)
+        {
+            CUpti_PmSampling_Disable_Params params = {
+                CUpti_PmSampling_Disable_Params_STRUCT_SIZE};
+            params.pPmSamplingObject = m_pmSamplerObject;
+            ReportCleanupError("cuptiPmSamplingDisable",
+                               cuptiPmSamplingDisable(&params));
+            m_samplingEnabled = false;
+            m_pmSamplerObject = nullptr;
+        }
+        if (m_profilerInitialized)
+        {
+            CUpti_Profiler_DeInitialize_Params params = {
+                CUpti_Profiler_DeInitialize_Params_STRUCT_SIZE};
+            ReportCleanupError("cuptiProfilerDeInitialize",
+                               cuptiProfilerDeInitialize(&params));
+            m_profilerInitialized = false;
+        }
     }
 };

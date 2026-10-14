@@ -6,6 +6,9 @@ NVIDIA PROCESS METRICS - ANALYSIS GUIDE
 gpu_telemetry.csv
   Device-level NVML telemetry. power_mw is board power, not process or kernel
   power. timestamp_ns is the timestamp used to align it with CUPTI Activity.
+  Unsupported or temporarily unavailable NVML fields are left empty instead of
+  discarding the other metrics in that sample. Energy analysis skips rows whose
+  power_mw value is unavailable.
 
 kernel_activity.csv
   CUPTI Activity intervals from the profiled process. Each record identifies a

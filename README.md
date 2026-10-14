@@ -178,6 +178,11 @@ The launcher creates a session, enables PM Sampling, and releases the target
 process with `LD_PRELOAD` only after PM Sampling is ready. Use a PM duration
 slightly longer than the benchmark duration.
 
+`--device` is the CUDA-visible device ordinal. The profiler resolves that CUDA
+device to its PCI bus ID before selecting the corresponding NVML device, so
+CUDA and NVML measurements remain aligned when `CUDA_VISIBLE_DEVICES` changes
+CUDA device ordering.
+
 ```bash
 nvidia-process-metrics-launcher \
   --device 0 \
@@ -510,7 +515,8 @@ ls -l "/tmp/nvidia-process-metrics-$UID/daemon.sock"
     --warmup 2
 ```
 
-A successful run displays `NVML device: 0`, `STATUS=OK`, a nonzero kernel
+A successful run displays the CUDA ordinal and matched NVML PCI device,
+`STATUS=OK`, a nonzero kernel
 count, and `Target exit code: 0`. Session files are written below:
 
 ```text

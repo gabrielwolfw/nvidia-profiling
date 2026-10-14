@@ -1,55 +1,36 @@
 /*
  *  Copyright 2024 NVIDIA Corporation. All rights reserved
  *
- * This sample demonstrates the usage of the PM sampling feature in the CUDA Profiling Tools Interface (CUPTI).
- * There are two parts to this sample:
+ * This collector uses the PM sampling feature in the CUDA Profiling Tools Interface (CUPTI).
+ * There are two supported operations:
  * 1) Querying the available metrics for a chip and their properties.
- * 2) Collecting PM sampling data for a CUDA workload.
+ * 2) Collecting device-wide PM sampling data while an external workload runs.
  *
- * The PM sampling feature allows users to collect sampling data at a specific interval for the CUDA workload
- * launched in the application.
- * For the continuous collection usecase, two separate threads are required:
- * 1. A main thread for launching the CUDA workload.
- * 2. A decode thread for decoding the collected data at a certain interval.
- *
- * The user is responsible for continuously calling the decode API, which frees up the hardware buffer for storing new data.
- *
- * In this sample, In the main thread the CUDA workload is launched. This workload is a simple vector addition implemented
- * in the `VectorAdd` kernel.
- *
- * The decode thread where we call the `DecodeCounterData` API. This API decodes the raw PM sampling data stored
- * in the hardware to a counter data image that the user has allocated.
+ * The launcher or benchmark script starts the external workload only after this
+ * process reports that PM sampling is active. A decode thread continuously
+ * drains hardware samples into the allocated counter data image while the main
+ * thread controls the collection duration.
  *
  */
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdlib>
+#include <exception>
+#include <limits>
 #include <sstream>
-#include <string.h>
 #include <stdio.h>
+#include <stdexcept>
+#include <string>
 #include <thread>
-
-#ifdef _WIN32
-#define strdup _strdup
-#endif
 
 // CUDA headers
 #include <cuda.h>
-#include <cuda_runtime.h>
 
 #include "pm_sampling.h"
-
-// Kernels
-__global__
-void vectorAdd(const int *pA, const int *pB, int *pC, int N)
-{
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if (i < N) {
-        pC[i] = pA[i] + pB[i];
-    }
-}
 
 std::atomic<bool> stopDecodeThread(false);
 volatile std::sig_atomic_t stopCollection = 0;
@@ -59,96 +40,10 @@ void RequestCollectionStop(int)
     stopCollection = 1;
 }
 
-const int NUM_OF_ELEMS = 4096*4096*2;
-const int THREAD_PER_BLOCKS = 512;
 // NVIDIA samples conventionally use status 2 when profiling is unsupported
 // by the selected device or environment. Keep that outcome distinct from a
 // program failure without depending on samples/common/helper_cupti.h.
 constexpr int kExitWaived = 2;
-
-
-class VectorLaunchWorkLoad
-{
-    int m_numOfElements;
-    int m_threadsPerBlock, m_blocksPerGrid;
-    size_t m_size;
-
-    int *pDeviceA, *pDeviceB, *pDeviceC;
-    std::vector<int> pHostA, pHostB, pHostC;
-
-public:
-    VectorLaunchWorkLoad(int numElements = NUM_OF_ELEMS, int threadsPerBlock = THREAD_PER_BLOCKS) :
-        m_numOfElements(numElements), m_threadsPerBlock(threadsPerBlock)
-    {
-        m_size = m_numOfElements * sizeof(int);
-        m_blocksPerGrid = (m_numOfElements + m_threadsPerBlock - 1) / m_threadsPerBlock;
-        pHostA.resize(m_numOfElements);
-        pHostB.resize(m_numOfElements);
-        pHostC.resize(m_numOfElements);
-    }
-
-    ~VectorLaunchWorkLoad() {}
-
-    void InitializeVector(std::vector<int>& pVector)
-    {
-        for (int i = 0; i < m_numOfElements; i++) {
-            pVector[i] = i;
-        }
-    }
-
-    void CleanUp()
-    {
-        // Free device memory.
-        RUNTIME_API_CALL(cudaFree(pDeviceA));
-        RUNTIME_API_CALL(cudaFree(pDeviceB));
-        RUNTIME_API_CALL(cudaFree(pDeviceC));
-    }
-
-    void SetUp()
-    {
-        // Initialize input vectors
-        InitializeVector(pHostA);
-        InitializeVector(pHostB);
-        std::fill(pHostC.begin(), pHostC.end(), 0);
-
-        // Allocate vectors in device memory
-        RUNTIME_API_CALL(cudaMalloc((void **)&pDeviceA, m_size));
-        RUNTIME_API_CALL(cudaMalloc((void **)&pDeviceB, m_size));
-        RUNTIME_API_CALL(cudaMalloc((void **)&pDeviceC, m_size));
-
-        // Copy vectors from host memory to device memory
-        RUNTIME_API_CALL(cudaMemcpy(pDeviceA, pHostA.data(), m_size, cudaMemcpyHostToDevice));
-        RUNTIME_API_CALL(cudaMemcpy(pDeviceB, pHostB.data(), m_size, cudaMemcpyHostToDevice));
-    }
-
-    void TearDown()
-    {
-        // Kernel Launch Verification
-        // Copy result from device memory to host memory
-        // pHostC contains the result in host memory
-        RUNTIME_API_CALL(cudaMemcpy(pHostC.data(), pDeviceC, m_size, cudaMemcpyDeviceToHost));
-
-        // Verify result
-        int sum;
-        for (int i = 0; i < m_numOfElements; ++i)
-        {
-            sum  = pHostA[i] + pHostB[i];
-            if (pHostC[i] != sum)
-            {
-                fprintf(stderr, "Error: Result verification failed.\n");
-                exit(EXIT_FAILURE);
-            }
-        }
-        printf("Result verification passed.\n");
-        CleanUp();
-    }
-
-    cudaError_t LaunchKernel()
-    {
-        vectorAdd<<<m_blocksPerGrid, m_threadsPerBlock>>>(pDeviceA, pDeviceB, pDeviceC, m_numOfElements);
-        return cudaGetLastError();
-    }
-};
 
 struct ParsedArgs
 {
@@ -162,7 +57,8 @@ struct ParsedArgs
     size_t hardwareBufferSize = 512 * 1024 * 1024; // 512MB
     uint64_t maxSamples = 100000;
     double durationSeconds = 10.0;
-    std::vector<const char*> metrics =
+    std::string outputPath = "pm_sampling.csv";
+    std::vector<std::string> metricNames =
     {
         "gr__cycles_active.avg",
         "gr__cycles_elapsed.max",
@@ -173,6 +69,17 @@ struct ParsedArgs
         "sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed",
         "sm__pipe_tensor_cycles_active_realtime.avg.pct_of_peak_sustained_elapsed"
     };
+
+    std::vector<const char*> MetricPointers() const
+    {
+        std::vector<const char*> metrics;
+        metrics.reserve(metricNames.size());
+        for (const std::string& metric : metricNames)
+        {
+            metrics.push_back(metric.c_str());
+        }
+        return metrics;
+    }
 };
 
 ParsedArgs parseArgs(int argc, char *argv[]);
@@ -184,35 +91,42 @@ void DecodeCounterData(
     std::vector<const char*> metricsList,
     CuptiPmSampling& cuptiPmSamplingTarget,
     CuptiProfilerHost& pmSamplingHost,
-    CUptiResult& result
+    std::exception_ptr& error
 );
 
 int main(int argc, char *argv[])
 {
-    ParsedArgs args = parseArgs(argc, argv);
-    DRIVER_API_CALL(cuInit(0));
-
-    std::string chipName = args.chipName;
-    std::vector<uint8_t> counterAvailibilityImage;
-    if ((args.isDeviceIndexSet && args.deviceIndex >= 0) || !args.isChipNameSet)
+    try
     {
-        CUdevice cuDevice;
-        DRIVER_API_CALL(cuDeviceGet(&cuDevice, args.deviceIndex));
-        PmSamplingDeviceSupportStatus(cuDevice);
+        ParsedArgs args = parseArgs(argc, argv);
+        DRIVER_API_CALL(cuInit(0));
 
-        CuptiPmSampling::GetChipName(args.deviceIndex, chipName);
-        CuptiPmSampling::GetCounterAvailabilityImage(args.deviceIndex, counterAvailibilityImage);
-    }
+        std::string chipName = args.chipName;
+        std::vector<uint8_t> counterAvailibilityImage;
+        if ((args.isDeviceIndexSet && args.deviceIndex >= 0) ||
+            !args.isChipNameSet)
+        {
+            CUdevice cuDevice;
+            DRIVER_API_CALL(cuDeviceGet(&cuDevice, args.deviceIndex));
+            PmSamplingDeviceSupportStatus(cuDevice);
 
-    if (args.queryBaseMetrics || args.queryMetricProperties)
-    {
-        return PmSamplingQueryMetrics(chipName, counterAvailibilityImage, args);
-    }
-    else
-    {
+            CuptiPmSampling::GetChipName(args.deviceIndex, chipName);
+            CuptiPmSampling::GetCounterAvailabilityImage(
+                args.deviceIndex, counterAvailibilityImage);
+        }
+
+        if (args.queryBaseMetrics || args.queryMetricProperties)
+        {
+            return PmSamplingQueryMetrics(
+                chipName, counterAvailibilityImage, args);
+        }
         return PmSamplingCollection(counterAvailibilityImage, args);
     }
-    return 0;
+    catch (const std::exception& error)
+    {
+        std::cerr << "PM sampler failed: " << error.what() << "\n";
+        return EXIT_FAILURE;
+    }
 }
 
 int PmSamplingQueryMetrics(std::string chipName, std::vector<uint8_t>& counterAvailibilityImage, ParsedArgs& args)
@@ -234,11 +148,11 @@ int PmSamplingQueryMetrics(std::string chipName, std::vector<uint8_t>& counterAv
 
     if (args.queryMetricProperties)
     {
-        for (const auto& metricName : args.metrics)
+        for (const auto& metricName : args.metricNames)
         {
             std::vector<std::string> subMetrics;
             CUPTI_API_CALL(pmSamplingHost.GetSubMetrics(metricName, subMetrics));
-            printf("Sub Metrics for %s:\n", metricName);
+            printf("Sub Metrics for %s:\n", metricName.c_str());
             for (const auto& metric : subMetrics) {
                 printf("  %s\n", metric.c_str());
             }
@@ -260,6 +174,7 @@ int PmSamplingQueryMetrics(std::string chipName, std::vector<uint8_t>& counterAv
 
 int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedArgs& args)
 {
+    const std::vector<const char*> metrics = args.MetricPointers();
     std::string chipName;
     CuptiPmSampling::GetChipName(args.deviceIndex, chipName);
 
@@ -267,7 +182,7 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     pmSamplingHost.SetUp(chipName, counterAvailibilityImage);
 
     std::vector<uint8_t> configImage;
-    CUPTI_API_CALL(pmSamplingHost.CreateConfigImage(args.metrics, configImage));
+    CUPTI_API_CALL(pmSamplingHost.CreateConfigImage(metrics, configImage));
 
     CuptiPmSampling cuptiPmSamplingTarget;
     cuptiPmSamplingTarget.SetUp(args.deviceIndex);
@@ -278,31 +193,33 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
 
     // 2. Create counter data image
     std::vector<uint8_t> counterDataImage;
-    CUPTI_API_CALL(cuptiPmSamplingTarget.CreateCounterDataImage(args.maxSamples, args.metrics, counterDataImage));
+    CUPTI_API_CALL(cuptiPmSamplingTarget.CreateCounterDataImage(args.maxSamples, metrics, counterDataImage));
 
-    CUptiResult threadFuncResult = CUPTI_SUCCESS;
+    stopCollection = 0;
+    if (std::signal(SIGINT, RequestCollectionStop) == SIG_ERR ||
+        std::signal(SIGTERM, RequestCollectionStop) == SIG_ERR)
+    {
+        throw std::runtime_error("failed to install PM sampler signal handlers");
+    }
+
+    // 3. Start PM sampling before launching the decoder thread.
+    CUPTI_API_CALL(cuptiPmSamplingTarget.StartPmSampling());
     stopDecodeThread = false;
-    // 3. Launch the decode thread
-    std::thread decodeThread(DecodeCounterData, std::ref(counterDataImage), std::ref(args.metrics), std::ref(cuptiPmSamplingTarget), std::ref(pmSamplingHost), std::ref(threadFuncResult));
+    std::exception_ptr decodeError;
+    std::thread decodeThread(
+        DecodeCounterData, std::ref(counterDataImage), metrics,
+        std::ref(cuptiPmSamplingTarget), std::ref(pmSamplingHost),
+        std::ref(decodeError));
 
     auto joinDecodeThread = [&]() {
         stopDecodeThread = true;
-        decodeThread.join();
-        if (threadFuncResult != CUPTI_SUCCESS)
+        if (decodeThread.joinable())
         {
-            const char *errstr;
-            cuptiGetResultString(threadFuncResult, &errstr);
-            std::cerr << "DecodeCounterData Thread failed with error " << errstr << std::endl;
-            return 1;
+            decodeThread.join();
         }
-        return 0;
     };
 
-    // 4. Start the PM sampling and launch the CUDA workload
-    CUPTI_API_CALL(cuptiPmSamplingTarget.StartPmSampling());
-    stopCollection = 0;
-    std::signal(SIGINT, RequestCollectionStop);
-    std::signal(SIGTERM, RequestCollectionStop);
+    // 4. Wait while the external workload runs.
     std::cout << "PM Sampling active for " << args.durationSeconds
               << " seconds with a " << args.maxSamples
               << "-sample counter data image..." << std::endl;
@@ -314,8 +231,13 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     }
 
     // 5. Stop the PM sampling and join the decode thread
-    CUPTI_API_CALL(cuptiPmSamplingTarget.StopPmSampling());
+    const CUptiResult stopResult = cuptiPmSamplingTarget.StopPmSampling();
     joinDecodeThread();
+    CUPTI_API_CALL(stopResult);
+    if (decodeError)
+    {
+        std::rethrow_exception(decodeError);
+    }
 
     // 6. Report PM sampling continuity before printing the collected ranges.
     pmSamplingHost.PrintSamplingGapSummary();
@@ -323,7 +245,13 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     // 7. Print the sample ranges for the collected metrics
     pmSamplingHost.PrintSampleRanges();
 
-    pmSamplingHost.SaveSamplesToCsv("pm_sampling.csv", args.metrics);
+    if (!pmSamplingHost.SaveSamplesToCsv(args.outputPath, metrics))
+    {
+        CUPTI_API_CALL(cuptiPmSamplingTarget.DisablePmSampling());
+        cuptiPmSamplingTarget.TearDown();
+        pmSamplingHost.TearDown();
+        return EXIT_FAILURE;
+    }
 
     // 8. Disable PM sampling for release all the resources allocated in CUPTI
     CUPTI_API_CALL(cuptiPmSamplingTarget.DisablePmSampling());
@@ -338,56 +266,51 @@ void DecodeCounterData( std::vector<uint8_t>& counterDataImage,
                         std::vector<const char*> metricsList,
                         CuptiPmSampling& cuptiPmSamplingTarget,
                         CuptiProfilerHost& pmSamplingHost,
-                        CUptiResult& result)
+                        std::exception_ptr& error)
 {
-    while (true)
+    try
     {
-        const char *errstr;
-        result = cuptiPmSamplingTarget.DecodePmSamplingData(counterDataImage);
-        if (result != CUPTI_SUCCESS)
+        while (true)
         {
-            cuptiGetResultString(result, &errstr);
-            std::cerr << "DecodePmSamplingData failed with error " << errstr << std::endl;
-            return;
-        }
+            CUPTI_API_CALL(
+                cuptiPmSamplingTarget.DecodePmSamplingData(counterDataImage));
 
-        CUpti_PmSampling_GetCounterDataInfo_Params counterDataInfo {CUpti_PmSampling_GetCounterDataInfo_Params_STRUCT_SIZE};
-        counterDataInfo.pCounterDataImage = counterDataImage.data();
-        counterDataInfo.counterDataImageSize = counterDataImage.size();
-        result = cuptiPmSamplingGetCounterDataInfo(&counterDataInfo);
-        if (result != CUPTI_SUCCESS)
-        {
-            cuptiGetResultString(result, &errstr);
-            std::cerr << "cuptiPmSamplingGetCounterDataInfo failed with error " << errstr << std::endl;
-            return;
-        }
+            CUpti_PmSampling_GetCounterDataInfo_Params counterDataInfo {
+                CUpti_PmSampling_GetCounterDataInfo_Params_STRUCT_SIZE};
+            counterDataInfo.pCounterDataImage = counterDataImage.data();
+            counterDataInfo.counterDataImageSize = counterDataImage.size();
+            CUPTI_API_CALL(
+                cuptiPmSamplingGetCounterDataInfo(&counterDataInfo));
 
-        if (counterDataInfo.numCompletedSamples == 0)
-        {
-            // PM sampling has stopped and a decode returned no ranges, so all
-            // samples pending in the hardware buffer have been drained.
-            if (stopDecodeThread)
+            if (counterDataInfo.numCompletedSamples == 0)
             {
-                return;
+                // PM sampling has stopped and a decode returned no ranges, so
+                // all samples pending in the hardware buffer have been drained.
+                if (stopDecodeThread)
+                {
+                    return;
+                }
+
+                // Avoid reinitializing an empty image in a tight loop.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
 
-            // Avoid reinitializing an empty image in a tight loop. Repeated
-            // empty resets can add collector overhead without freeing data.
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
+            for (size_t sampleIndex = 0;
+                 sampleIndex < counterDataInfo.numCompletedSamples;
+                 ++sampleIndex)
+            {
+                CUPTI_API_CALL(pmSamplingHost.EvaluateCounterData(
+                    cuptiPmSamplingTarget.GetPmSamplerObject(), sampleIndex,
+                    metricsList, counterDataImage));
+            }
+            CUPTI_API_CALL(
+                cuptiPmSamplingTarget.ResetCounterDataImage(counterDataImage));
         }
-
-        for (size_t sampleIndex = 0; sampleIndex < counterDataInfo.numCompletedSamples; ++sampleIndex)
-        {
-            pmSamplingHost.EvaluateCounterData(cuptiPmSamplingTarget.GetPmSamplerObject(), sampleIndex, metricsList, counterDataImage);
-        }
-        result = cuptiPmSamplingTarget.ResetCounterDataImage(counterDataImage);
-        if (result != CUPTI_SUCCESS)
-        {
-            cuptiGetResultString(result, &errstr);
-            std::cerr << "ResetCounterDataImage failed with error " << errstr << std::endl;
-            return;
-        }
+    }
+    catch (...)
+    {
+        error = std::current_exception();
     }
 }
 
@@ -399,8 +322,68 @@ void PrintHelp()
     printf("    List submetrics   : ./pm_sampling --device/-d <deviceIndex> --chip/-c <chipname> --metrics/-m <metric1,metric2,...> --queryMetricsProp/-p\n");
     printf("  Note: when device index flag is passed, the chip name flag will be ignored.\n");
     printf("  PM Sampling:\n");
-    printf("    Collection: ./pm_sampling --device/-d <deviceIndex> --duration/-t <seconds> --samplingInterval/-i <samplingInterval> --maxsamples/-s <maxSamples in CounterDataImage> --hardwareBufferSize/-b <hardware buffer size> --metrics/-m <metric1,metric2,...>\n");
+    printf("    Collection: ./pm_sampling --device/-d <deviceIndex> --duration/-t <seconds> --samplingInterval/-i <samplingInterval> --maxsamples/-s <maxSamples in CounterDataImage> --hardwareBufferSize/-b <hardware buffer size> --metrics/-m <metric1,metric2,...> [--output <csv path>]\n");
     printf("    Default collection duration: 10 seconds.\n");
+}
+
+[[noreturn]] void ArgumentError(const std::string& message)
+{
+    fprintf(stderr, "%s\n", message.c_str());
+    exit(EXIT_FAILURE);
+}
+
+const char* RequireValue(int argc, char* argv[], int& index,
+                         const std::string& option)
+{
+    if (index + 1 >= argc)
+    {
+        ArgumentError("Missing value for " + option);
+    }
+    return argv[++index];
+}
+
+uint64_t ParsePositiveInteger(const char* value, const std::string& option)
+{
+    if (value[0] == '\0' || value[0] == '-')
+    {
+        ArgumentError(option + " must be a positive integer");
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (errno == ERANGE || end == value || *end != '\0' || parsed == 0 ||
+        parsed > std::numeric_limits<uint64_t>::max())
+    {
+        ArgumentError(option + " must be a positive integer");
+    }
+    return static_cast<uint64_t>(parsed);
+}
+
+int ParseDeviceIndex(const char* value, const std::string& option)
+{
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno == ERANGE || end == value || *end != '\0' || parsed < 0 ||
+        parsed > std::numeric_limits<int>::max())
+    {
+        ArgumentError(option + " must be a non-negative integer");
+    }
+    return static_cast<int>(parsed);
+}
+
+double ParseDuration(const char* value, const std::string& option)
+{
+    char* end = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(value, &end);
+    if (errno == ERANGE || end == value || *end != '\0' ||
+        !std::isfinite(parsed) || parsed <= 0.0)
+    {
+        ArgumentError(option + " must be a finite number greater than zero");
+    }
+    return parsed;
 }
 
 ParsedArgs parseArgs(int argc, char *argv[])
@@ -411,41 +394,50 @@ ParsedArgs parseArgs(int argc, char *argv[])
         std::string arg = argv[i];
         if (arg == "--device" || arg == "-d")
         {
-            args.deviceIndex = std::stoi(argv[++i]);
+            args.deviceIndex = ParseDeviceIndex(
+                RequireValue(argc, argv, i, arg), arg);
             args.isDeviceIndexSet = true;
         }
         else if (arg == "--samplingInterval" || arg == "-i")
         {
-            args.samplingInterval = std::stoull(argv[++i]);
+            args.samplingInterval = ParsePositiveInteger(
+                RequireValue(argc, argv, i, arg), arg);
         }
         else if (arg == "--duration" || arg == "-t")
         {
-            if (i + 1 >= argc)
-            {
-                fprintf(stderr, "Missing value for %s\n", arg.c_str());
-                exit(EXIT_FAILURE);
-            }
-
-            args.durationSeconds = std::stod(argv[++i]);
-
-            if (!std::isfinite(args.durationSeconds) ||
-                args.durationSeconds <= 0.0)
-            {
-                fprintf(stderr, "Duration must be greater than zero.\n");
-                exit(EXIT_FAILURE);
-            }
+            args.durationSeconds = ParseDuration(
+                RequireValue(argc, argv, i, arg), arg);
         }
         else if (arg == "--maxsamples" || arg == "-s")
         {
-            args.maxSamples = std::stoull(argv[++i]);
+            args.maxSamples = ParsePositiveInteger(
+                RequireValue(argc, argv, i, arg), arg);
         }
         else if (arg == "--hardwareBufferSize" || arg == "-b")
         {
-            args.hardwareBufferSize = std::stoull(argv[++i]);
+            const uint64_t size = ParsePositiveInteger(
+                RequireValue(argc, argv, i, arg), arg);
+            if (size > std::numeric_limits<size_t>::max())
+            {
+                ArgumentError(arg + " exceeds the platform size limit");
+            }
+            args.hardwareBufferSize = static_cast<size_t>(size);
+        }
+        else if (arg == "--output")
+        {
+            args.outputPath = RequireValue(argc, argv, i, arg);
+            if (args.outputPath.empty())
+            {
+                ArgumentError(arg + " cannot be empty");
+            }
         }
         else if (arg == "--chip" || arg == "-c")
         {
-            args.chipName = std::string(argv[++i]);
+            args.chipName = RequireValue(argc, argv, i, arg);
+            if (args.chipName.empty())
+            {
+                ArgumentError(arg + " cannot be empty");
+            }
             args.isChipNameSet = true;
         }
         else if (arg == "--queryBaseMetrics" || arg == "-q")
@@ -458,12 +450,22 @@ ParsedArgs parseArgs(int argc, char *argv[])
         }
         else if (arg == "--metrics" || arg == "-m")
         {
-            std::stringstream ss(argv[++i]);
+            const std::string value = RequireValue(argc, argv, i, arg);
+            if (value.empty() || value.front() == ',' || value.back() == ',' ||
+                value.find(",,") != std::string::npos)
+            {
+                ArgumentError(arg + " requires a comma-separated list of metrics");
+            }
+            std::stringstream ss(value);
             std::string metric;
-            args.metrics.clear();
+            args.metricNames.clear();
             while (std::getline(ss, metric, ','))
             {
-                args.metrics.push_back(strdup(metric.c_str()));
+                if (metric.empty())
+                {
+                    ArgumentError(arg + " contains an empty metric name");
+                }
+                args.metricNames.push_back(metric);
             }
         }
         else if (arg == "--help" || arg == "-h")

@@ -2,16 +2,21 @@
 #include "nvidia-process-metrics-session.hpp"
 #include "nvidia-process-metrics-config.hpp"
 
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,6 +27,39 @@ namespace {
 using nvidia_process_metrics::NvidiaProcessMetricsSessionManager;
 using nvidia_process_metrics::SessionState;
 using nvidia_process_metrics::SessionStateName;
+
+constexpr size_t kMaxConcurrentClients = 32;
+constexpr time_t kClientTimeoutSeconds = 10;
+volatile std::sig_atomic_t shutdown_requested = 0;
+volatile std::sig_atomic_t shutdown_notification_fd = -1;
+std::mutex active_clients_mutex;
+std::condition_variable active_clients_drained;
+size_t active_clients = 0;
+
+void RequestShutdown(int) {
+  shutdown_requested = 1;
+  if (shutdown_notification_fd < 0) {
+    return;
+  }
+  const int saved_errno = errno;
+  const char notification = 1;
+  const ssize_t ignored =
+      write(shutdown_notification_fd, &notification, sizeof(notification));
+  static_cast<void>(ignored);
+  errno = saved_errno;
+}
+
+void InstallSignalHandlers(int notification_fd) {
+  shutdown_notification_fd = notification_fd;
+  struct sigaction action {};
+  action.sa_handler = RequestShutdown;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGINT, &action, nullptr) != 0 ||
+      sigaction(SIGTERM, &action, nullptr) != 0) {
+    throw std::runtime_error(std::string("cannot install signal handlers: ") +
+                             std::strerror(errno));
+  }
+}
 
 struct DaemonOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
@@ -93,6 +131,36 @@ bool GetPeerCredentials(int client, uid_t* uid, gid_t* gid) {
   return true;
 }
 
+bool ConfigureClientTimeouts(int client) {
+  const timeval timeout{kClientTimeoutSeconds, 0};
+  return setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                    sizeof(timeout)) == 0 &&
+         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+                    sizeof(timeout)) == 0;
+}
+
+bool AcquireClientSlot() {
+  std::scoped_lock lock(active_clients_mutex);
+  if (active_clients >= kMaxConcurrentClients) {
+    return false;
+  }
+  ++active_clients;
+  return true;
+}
+
+void ReleaseClientSlot() {
+  std::scoped_lock lock(active_clients_mutex);
+  --active_clients;
+  if (active_clients == 0) {
+    active_clients_drained.notify_all();
+  }
+}
+
+void WaitForClients() {
+  std::unique_lock lock(active_clients_mutex);
+  active_clients_drained.wait(lock, [] { return active_clients == 0; });
+}
+
 std::string Error(const std::string& message) { return "ERR " + message; }
 
 std::string HandleRequest(NvidiaProcessMetricsSessionManager& manager,
@@ -129,6 +197,12 @@ std::string HandleRequest(NvidiaProcessMetricsSessionManager& manager,
       }
       return "OK stopped";
     }
+    if (fields[0] == "FAIL" && fields.size() == 3) {
+      if (!manager.Fail(fields[1], uid, fields[2], &error)) {
+        return Error(error);
+      }
+      return "OK failed";
+    }
     if (fields[0] == "STATUS" && fields.size() == 2) {
       SessionState state;
       std::string reason;
@@ -149,7 +223,7 @@ void ServeClient(int client, NvidiaProcessMetricsSessionManager& manager) {
   uid_t uid = 0;
   gid_t gid = 0;
   if (!GetPeerCredentials(client, &uid, &gid)) {
-    send(client, "ERR peer_credentials", 20, 0);
+    send(client, "ERR peer_credentials", 20, MSG_NOSIGNAL);
     close(client);
     return;
   }
@@ -158,7 +232,7 @@ void ServeClient(int client, NvidiaProcessMetricsSessionManager& manager) {
   if (received > 0) {
     const std::string reply =
         HandleRequest(manager, uid, gid, std::string(buffer, received));
-    send(client, reply.data(), reply.size(), 0);
+    send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
   }
   close(client);
 }
@@ -174,12 +248,36 @@ int main(int argc, char** argv) {
     }
 #endif
     const DaemonOptions options = ParseArgs(argc, argv);
+    int shutdown_pipe[2]{};
+    if (pipe2(shutdown_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+      throw std::runtime_error(std::string("cannot create shutdown pipe: ") +
+                               std::strerror(errno));
+    }
+    InstallSignalHandlers(shutdown_pipe[1]);
     const int listener = CreateListener(options.socket_path);
     NvidiaProcessMetricsSessionManager manager(options.results_root,
                                                 options.sampler_path);
     std::cout << "NVIDIA Process Metrics daemon listening on "
               << options.socket_path << '\n';
-    while (true) {
+    while (!shutdown_requested) {
+      pollfd descriptors[2] = {
+          {shutdown_pipe[0], POLLIN, 0},
+          {listener, POLLIN, 0},
+      };
+      const int poll_result = poll(descriptors, 2, -1);
+      if (poll_result < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        std::cerr << "poll failed: " << std::strerror(errno) << '\n';
+        break;
+      }
+      if (shutdown_requested || (descriptors[0].revents & POLLIN) != 0) {
+        break;
+      }
+      if ((descriptors[1].revents & POLLIN) == 0) {
+        continue;
+      }
       const int client = accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
       if (client < 0) {
         if (errno == EINTR) {
@@ -188,8 +286,45 @@ int main(int argc, char** argv) {
         std::cerr << "accept failed: " << std::strerror(errno) << '\n';
         continue;
       }
-      std::thread(ServeClient, client, std::ref(manager)).detach();
+      if (!ConfigureClientTimeouts(client)) {
+        std::cerr << "cannot configure client socket: " << std::strerror(errno)
+                  << '\n';
+        close(client);
+        continue;
+      }
+      if (!AcquireClientSlot()) {
+        constexpr char kBusyReply[] = "ERR server_busy";
+        send(client, kBusyReply, sizeof(kBusyReply) - 1, MSG_NOSIGNAL);
+        close(client);
+        continue;
+      }
+      try {
+        std::thread([client, &manager]() {
+          try {
+            ServeClient(client, manager);
+          } catch (const std::exception& exception) {
+            std::cerr << "client request failed: " << exception.what() << '\n';
+            close(client);
+          } catch (...) {
+            std::cerr << "client request failed with an unknown error\n";
+            close(client);
+          }
+          ReleaseClientSlot();
+        }).detach();
+      } catch (const std::exception& exception) {
+        ReleaseClientSlot();
+        close(client);
+        std::cerr << "cannot create client thread: " << exception.what() << '\n';
+      }
     }
+    shutdown_notification_fd = -1;
+    close(shutdown_pipe[0]);
+    close(shutdown_pipe[1]);
+    close(listener);
+    unlink(options.socket_path.c_str());
+    std::cout << "NVIDIA Process Metrics daemon shutting down\n";
+    WaitForClients();
+    return 0;
   } catch (const std::exception& exception) {
     std::cerr << "nvidia-process-metrics-daemon: " << exception.what() << '\n';
     return 1;

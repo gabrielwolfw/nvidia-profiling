@@ -49,8 +49,12 @@ inline int ConnectToDaemon(const std::string& socket_path) {
   std::strncpy(address.sun_path, socket_path.c_str(),
                sizeof(address.sun_path) - 1);
 
-  if (connect(socket_fd, reinterpret_cast<const sockaddr*>(&address),
-              sizeof(address)) != 0) {
+  int connected = -1;
+  do {
+    connected = connect(socket_fd, reinterpret_cast<const sockaddr*>(&address),
+                        sizeof(address));
+  } while (connected != 0 && errno == EINTR);
+  if (connected != 0) {
     const std::string error = std::strerror(errno);
     close(socket_fd);
     throw std::runtime_error("cannot connect to daemon: " + error);
@@ -61,7 +65,10 @@ inline int ConnectToDaemon(const std::string& socket_path) {
 inline std::string Request(const std::string& socket_path,
                            const std::string& request) {
   const int socket_fd = ConnectToDaemon(socket_path);
-  const ssize_t sent = send(socket_fd, request.data(), request.size(), 0);
+  ssize_t sent = -1;
+  do {
+    sent = send(socket_fd, request.data(), request.size(), MSG_NOSIGNAL);
+  } while (sent < 0 && errno == EINTR);
   if (sent != static_cast<ssize_t>(request.size())) {
     const std::string error = std::strerror(errno);
     close(socket_fd);
@@ -69,7 +76,10 @@ inline std::string Request(const std::string& socket_path,
   }
 
   char buffer[4096]{};
-  const ssize_t received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
+  ssize_t received = -1;
+  do {
+    received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
+  } while (received < 0 && errno == EINTR);
   if (received < 0) {
     const std::string error = std::strerror(errno);
     close(socket_fd);

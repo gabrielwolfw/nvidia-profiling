@@ -39,6 +39,10 @@ uses the caller's Unix-socket credentials to create results under:
 
 ## Full profiling of a launched command
 
+`--device` selects a CUDA-visible device ordinal. The injected profiler maps
+that device to NVML by PCI bus ID, so reordered `CUDA_VISIBLE_DEVICES` ordinals
+do not cause telemetry to be collected from a different physical GPU.
+
 ```bash
 nvidia-process-metrics-launcher \
   --device 0 --duration 10 --window-ms 200 \

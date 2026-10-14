@@ -27,13 +27,16 @@ class NvidiaProcessMetricsWorker {
 
   bool Start(std::string* error);
   void Stop();
+  void Fail(const std::string& reason);
   SessionState state() const;
   std::string reason() const;
   std::filesystem::path output_dir() const;
 
  private:
   bool StartSampler(std::string* error);
-  bool WaitForSamplerReady(std::string* error) const;
+  bool WaitForSamplerReady(std::string* error);
+  bool PollSamplerExit(std::string* error);
+  bool TransferOutputDirectoryOwnership(std::string* error) const;
   void Monitor();
   void Finish(const std::string& reason);
   void SetState(SessionState state, const std::string& reason);
@@ -50,6 +53,7 @@ class NvidiaProcessMetricsWorker {
   pid_t sampler_pid_ = -1;
   std::atomic<bool> stop_requested_{false};
   std::thread monitor_thread_;
+  std::mutex lifecycle_mutex_;
   mutable std::mutex mutex_;
   SessionState state_ = SessionState::kCreated;
   std::string reason_;

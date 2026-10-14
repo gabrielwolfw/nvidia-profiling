@@ -19,6 +19,32 @@
 
 namespace {
 
+volatile sig_atomic_t requested_signal = 0;
+constexpr char kProfilerCompletionSuccess = '0';
+constexpr char kProfilerCompletionFailure = '1';
+
+struct ProfilerCompletion {
+  bool success;
+  std::string reason;
+};
+
+void RequestShutdown(int signal_number) {
+  if (requested_signal == 0) {
+    requested_signal = signal_number;
+  }
+}
+
+void InstallSignalHandlers() {
+  struct sigaction action {};
+  action.sa_handler = RequestShutdown;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGINT, &action, nullptr) != 0 ||
+      sigaction(SIGTERM, &action, nullptr) != 0) {
+    throw std::runtime_error(std::string("cannot install signal handler: ") +
+                             std::strerror(errno));
+  }
+}
+
 struct LauncherOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
   std::string library_path =
@@ -119,6 +145,60 @@ void StopSession(const LauncherOptions& options, const std::string& session_id) 
                                              "STOP " + session_id));
 }
 
+void FailSession(const LauncherOptions& options, const std::string& session_id,
+                 const std::string& reason) {
+  RequireOk(nvidia_process_metrics::Request(
+      options.socket_path, "FAIL " + session_id + " " + reason));
+}
+
+bool StopSessionForCleanup(const LauncherOptions& options,
+                           const std::string& session_id) {
+  try {
+    StopSession(options, session_id);
+    return true;
+  } catch (const std::exception& exception) {
+    std::cerr << "cannot stop interrupted session: " << exception.what()
+              << '\n';
+    return false;
+  }
+}
+
+bool FailSessionForCleanup(const LauncherOptions& options,
+                           const std::string& session_id,
+                           const std::string& reason) {
+  try {
+    FailSession(options, session_id, reason);
+    return true;
+  } catch (const std::exception& exception) {
+    std::cerr << "cannot fail profiling session: " << exception.what() << '\n';
+    return false;
+  }
+}
+
+ProfilerCompletion ReadProfilerCompletion(int completion_fd) {
+  char status = 0;
+  ssize_t received = -1;
+  do {
+    received = read(completion_fd, &status, sizeof(status));
+  } while (received < 0 && errno == EINTR);
+  const int read_error = errno;
+  close(completion_fd);
+
+  if (received == sizeof(status)) {
+    if (status == kProfilerCompletionSuccess) {
+      return {true, {}};
+    }
+    if (status == kProfilerCompletionFailure) {
+      return {false, "preload_output_failed"};
+    }
+    return {false, "preload_completion_invalid"};
+  }
+  if (received == 0 || (received < 0 && read_error == EAGAIN)) {
+    return {false, "preload_completion_missing"};
+  }
+  return {false, "preload_completion_read_failed"};
+}
+
 void PrintResults(const LauncherOptions& options, const std::string& session_id) {
   const auto fields = RequireOk(nvidia_process_metrics::Request(
       options.socket_path, "STATUS " + session_id));
@@ -139,24 +219,55 @@ void PrintResults(const LauncherOptions& options, const std::string& session_id)
 }
 
 pid_t LaunchWithBarrier(const LauncherOptions& options,
-                        const std::string& output_dir, int release_fd) {
+                        const std::string& output_dir, int release_fd,
+                        int parent_release_fd, int completion_fd,
+                        int parent_completion_fd) {
   const pid_t pid = fork();
   if (pid < 0) {
     throw std::runtime_error("cannot fork target process");
   }
   if (pid != 0) {
+    if (setpgid(pid, pid) != 0) {
+      const std::string error = std::strerror(errno);
+      kill(pid, SIGKILL);
+      while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+      }
+      throw std::runtime_error("cannot create target process group: " + error);
+    }
     return pid;
   }
 
+  close(parent_release_fd);
+  close(parent_completion_fd);
+  if (setpgid(0, 0) != 0) {
+    _exit(127);
+  }
+  struct sigaction default_action {};
+  default_action.sa_handler = SIG_DFL;
+  sigemptyset(&default_action.sa_mask);
+  sigaction(SIGINT, &default_action, nullptr);
+  sigaction(SIGTERM, &default_action, nullptr);
+
   char release = 0;
-  if (read(release_fd, &release, 1) != 1) {
+  ssize_t received = -1;
+  do {
+    received = read(release_fd, &release, 1);
+  } while (received < 0 && errno == EINTR);
+  if (received != 1) {
     _exit(127);
   }
   close(release_fd);
+  const int completion_flags = fcntl(completion_fd, F_GETFD);
+  if (completion_flags < 0 ||
+      fcntl(completion_fd, F_SETFD, completion_flags & ~FD_CLOEXEC) != 0) {
+    _exit(127);
+  }
   setenv("NVIDIA_METRICS_OUTPUT_DIR", output_dir.c_str(), 1);
   setenv("NVIDIA_METRICS_DEVICE", std::to_string(options.device).c_str(), 1);
   setenv("NVIDIA_METRICS_WINDOW_MS",
          std::to_string(options.window_ms).c_str(), 1);
+  setenv("NVIDIA_METRICS_COMPLETION_FD",
+         std::to_string(completion_fd).c_str(), 1);
   const char* existing_preload = getenv("LD_PRELOAD");
   const std::string preload = existing_preload == nullptr
                                   ? options.library_path
@@ -172,14 +283,15 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
   _exit(127);
 }
 
-void Observe(const LauncherOptions& options, const std::string& session_id) {
+int Observe(const LauncherOptions& options) {
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::seconds(options.duration_seconds);
-  while (std::chrono::steady_clock::now() < deadline &&
+  while (requested_signal == 0 &&
+         std::chrono::steady_clock::now() < deadline &&
          (kill(options.pid, 0) == 0 || errno == EPERM)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  StopSession(options, session_id);
+  return requested_signal;
 }
 
 }  // namespace
@@ -187,45 +299,137 @@ void Observe(const LauncherOptions& options, const std::string& session_id) {
 int main(int argc, char** argv) {
   try {
     const LauncherOptions options = ParseArgs(argc, argv);
+    if (!options.command.empty() &&
+        !std::filesystem::is_regular_file(options.library_path)) {
+      throw std::runtime_error("metrics library not found: " +
+                               options.library_path);
+    }
+    InstallSignalHandlers();
     const auto [session_id, output_dir] = CreateSession(options);
 
     if (options.command.empty()) {
       StartSession(options, session_id, options.pid);
-      Observe(options, session_id);
-      PrintResults(options, session_id);
-      return 0;
+      const int signal_number = Observe(options);
+      if (signal_number == 0) {
+        StopSession(options, session_id);
+      } else {
+        StopSessionForCleanup(options, session_id);
+      }
+      try {
+        PrintResults(options, session_id);
+      } catch (const std::exception& exception) {
+        if (requested_signal == 0) {
+          throw;
+        }
+        std::cerr << "cannot read interrupted session results: "
+                  << exception.what() << '\n';
+      }
+      return requested_signal == 0 ? 0 : 128 + requested_signal;
     }
 
-    if (!std::filesystem::is_regular_file(options.library_path)) {
-      throw std::runtime_error("metrics library not found: " +
-                               options.library_path);
-    }
     int barrier[2]{};
     if (pipe2(barrier, O_CLOEXEC) != 0) {
       throw std::runtime_error("cannot create process barrier");
     }
-    const pid_t pid = LaunchWithBarrier(options, output_dir, barrier[0]);
+    int completion_pipe[2]{};
+    if (pipe2(completion_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
+      close(barrier[0]);
+      close(barrier[1]);
+      throw std::runtime_error("cannot create profiler completion pipe");
+    }
+    const pid_t pid =
+        LaunchWithBarrier(options, output_dir, barrier[0], barrier[1],
+                          completion_pipe[1], completion_pipe[0]);
     close(barrier[0]);
+    close(completion_pipe[1]);
     try {
       StartSession(options, session_id, pid);
     } catch (...) {
-      kill(pid, SIGKILL);
+      kill(-pid, SIGKILL);
       close(barrier[1]);
-      waitpid(pid, nullptr, 0);
+      while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+      }
+      close(completion_pipe[0]);
+      StopSessionForCleanup(options, session_id);
       throw;
     }
-    if (write(barrier[1], "1", 1) != 1) {
-      throw std::runtime_error("cannot release target process");
+
+    std::string release_error;
+    if (requested_signal == 0) {
+      ssize_t released = -1;
+      do {
+        released = write(barrier[1], "1", 1);
+      } while (released < 0 && errno == EINTR && requested_signal == 0);
+      if (released != 1 && requested_signal == 0) {
+        release_error = std::strerror(errno);
+      }
     }
     close(barrier[1]);
+
+    if (!release_error.empty()) {
+      kill(-pid, SIGKILL);
+      while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
+      }
+      close(completion_pipe[0]);
+      StopSessionForCleanup(options, session_id);
+      throw std::runtime_error("cannot release target process: " +
+                               release_error);
+    }
+
     int status = 0;
-    waitpid(pid, &status, 0);
-    StopSession(options, session_id);
-    PrintResults(options, session_id);
+    int signal_number = 0;
+    bool session_stopped = false;
+    while (true) {
+      if (requested_signal != 0 && signal_number == 0) {
+        signal_number = requested_signal;
+        kill(-pid, signal_number);
+        session_stopped = StopSessionForCleanup(options, session_id);
+      }
+
+      const pid_t waited = waitpid(pid, &status, 0);
+      if (waited == pid) {
+        break;
+      }
+      if (waited < 0 && errno == EINTR) {
+        continue;
+      }
+      throw std::runtime_error(std::string("cannot wait for target process: ") +
+                               std::strerror(errno));
+    }
+
+    const ProfilerCompletion profiler_completion =
+        ReadProfilerCompletion(completion_pipe[0]);
+    if (!profiler_completion.success) {
+      std::cerr << "Profiler failed: " << profiler_completion.reason << '\n';
+      if (requested_signal == 0) {
+        FailSession(options, session_id, profiler_completion.reason);
+      } else {
+        FailSessionForCleanup(options, session_id, profiler_completion.reason);
+      }
+      session_stopped = true;
+    } else if (!session_stopped) {
+      if (requested_signal == 0) {
+        StopSession(options, session_id);
+      } else {
+        StopSessionForCleanup(options, session_id);
+      }
+    }
+    try {
+      PrintResults(options, session_id);
+    } catch (const std::exception& exception) {
+      if (requested_signal == 0) {
+        throw;
+      }
+      std::cerr << "cannot read interrupted session results: "
+                << exception.what() << '\n';
+    }
+    if (requested_signal != 0) {
+      return 128 + requested_signal;
+    }
     if (WIFEXITED(status)) {
       const int exit_code = WEXITSTATUS(status);
       std::cout << "Target exit code: " << exit_code << '\n';
-      return exit_code;
+      return exit_code == 0 && !profiler_completion.success ? 1 : exit_code;
     }
     if (WIFSIGNALED(status)) {
       const int signal_number = WTERMSIG(status);
@@ -236,6 +440,6 @@ int main(int argc, char** argv) {
     return 1;
   } catch (const std::exception& exception) {
     std::cerr << "nvidia-process-metrics-launcher: " << exception.what() << '\n';
-    return 1;
+    return requested_signal == 0 ? 1 : 128 + requested_signal;
   }
 }

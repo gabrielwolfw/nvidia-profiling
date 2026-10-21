@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit an initial Bayesian linear GPU power model from NVML and CUPTI data."""
+"""Shared aggregation and Bayesian regression support for energy analyses."""
 
 import argparse
 import csv

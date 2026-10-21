@@ -2,20 +2,41 @@
 """Bayesian attribution of device-level GPU energy to CUDA kernel events."""
 
 import argparse
-import csv
 import json
 import math
 import re
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
-from analyze_kernel_energy import integrate_range, load_telemetry
+from energy_attribution.diagnostics import (
+    DEFAULT_MIN_WINDOWS_PER_PARAMETER,
+    check_identifiability,
+    print_identifiability_warnings,
+)
+from energy_attribution.io import (
+    NS_PER_SECOND,
+    load_kernels,
+    load_power_trace,
+    write_csv,
+)
+from energy_attribution.windows import (
+    EVENT_CHUNK,
+    OTHER_FAMILY,
+    aggregate_family_activity,
+    build_windows,
+    distribute_to_events,
+    family_columns,
+    select_families,
+)
 
 
-NS_PER_SECOND = 1_000_000_000
-OTHER_FAMILY = "__other__"
+# "model": split each window's measured dynamic energy in proportion to the
+# fitted terms b0 + sum(beta_f * a_f), so the intercept keeps its share.
+# "active-fraction": legacy rule that scales energy by the kernel-busy
+# fraction and splits all of it among families, ignoring b0.
+ATTRIBUTION_MODES = ("model", "active-fraction")
 
 
 def parse_args():
@@ -37,6 +58,7 @@ def parse_args():
     parser.add_argument("--posterior-draws", type=int, default=2000)
     parser.add_argument("--thin", type=int, default=2)
     parser.add_argument("--seed", type=int, default=2026)
+    add_model_check_arguments(parser)
     parser.add_argument(
         "--plot",
         action="store_true",
@@ -55,157 +77,47 @@ def parse_args():
     return parser.parse_args()
 
 
-def require_fields(reader, required, label):
-    fields = set(reader.fieldnames or [])
-    missing = required - fields
-    if missing:
-        raise ValueError(f"{label} CSV is missing columns: {sorted(missing)}")
+def add_model_check_arguments(parser):
+    parser.add_argument(
+        "--attribution",
+        choices=ATTRIBUTION_MODES,
+        default="model",
+        help=(
+            "'model' (default) keeps the intercept's share of each window as "
+            "baseline energy; 'active-fraction' reproduces the legacy rule."
+        ),
+    )
+    parser.add_argument(
+        "--min-windows-per-parameter",
+        type=float,
+        default=DEFAULT_MIN_WINDOWS_PER_PARAMETER,
+        help="Minimum training windows per regression parameter.",
+    )
+    parser.add_argument(
+        "--allow-underdetermined",
+        action="store_true",
+        help="Fit even when training windows per parameter is below the minimum.",
+    )
 
 
-def parse_kernel_row(row):
-    try:
-        start_ns = int(row["start_ns"])
-        end_ns = int(row["end_ns"])
-        name = row["kernel_name"]
-    except (KeyError, TypeError, ValueError):
-        return None
-    if end_ns <= start_ns or not name:
-        return None
-    return start_ns, end_ns, name
-
-
-def scan_kernel_families(path, max_families):
-    duration_by_name = Counter()
-    event_count_by_name = Counter()
-    first_start = None
-    last_end = None
-    previous_start = None
-    skipped = 0
-
-    with path.open(newline="", encoding="utf-8") as source:
-        reader = csv.DictReader(source)
-        require_fields(reader, {"start_ns", "end_ns", "kernel_name"}, "kernels")
-        for row in reader:
-            parsed = parse_kernel_row(row)
-            if parsed is None:
-                skipped += 1
-                continue
-            start_ns, end_ns, name = parsed
-            if previous_start is not None and start_ns < previous_start:
-                raise ValueError(
-                    "Kernel rows must be sorted by start_ns for streaming analysis"
-                )
-            previous_start = start_ns
-            duration_by_name[name] += end_ns - start_ns
-            event_count_by_name[name] += 1
-            first_start = start_ns if first_start is None else first_start
-            last_end = end_ns if last_end is None else max(last_end, end_ns)
-
-    if not duration_by_name:
+def scan_kernel_families(table, max_families):
+    """Summarize a loaded KernelTable and choose its family basis."""
+    if not len(table):
         raise ValueError("No valid kernel events were found")
-    if skipped:
-        print(f"WARNING: Skipped {skipped} invalid kernel rows.")
-
-    ranked = [name for name, _ in duration_by_name.most_common()]
-    if len(ranked) > max_families:
-        selected = ranked[: max_families - 1]
-        families = selected + [OTHER_FAMILY]
-    else:
-        selected = ranked
-        families = selected
+    if table.skipped:
+        print(f"WARNING: Skipped {table.skipped} invalid kernel rows.")
+    duration_by_name, event_count_by_name = table.name_statistics()
+    families, selected = select_families(duration_by_name, max_families)
     return {
+        "table": table,
         "families": families,
-        "selected": set(selected),
+        "selected": selected,
         "duration_by_name": duration_by_name,
         "event_count_by_name": event_count_by_name,
-        "first_start": first_start,
-        "last_end": last_end,
-        "valid_events": sum(event_count_by_name.values()),
+        "first_start": table.first_start,
+        "last_end": table.last_end,
+        "valid_events": len(table),
     }
-
-
-def family_for_name(name, selected):
-    return name if name in selected else OTHER_FAMILY
-
-
-def aggregate_family_activity(
-    path, selected, family_index, analysis_start, analysis_end, window_ns
-):
-    window_count = math.ceil((analysis_end - analysis_start) / window_ns)
-    activity_ns = np.zeros((window_count, len(family_index)), dtype=np.float64)
-    union_active_ns = np.zeros(window_count, dtype=np.float64)
-    union_end_ns = np.full(window_count, -1, dtype=np.int64)
-    valid_index = 0
-
-    with path.open(newline="", encoding="utf-8") as source:
-        reader = csv.DictReader(source)
-        for row in reader:
-            parsed = parse_kernel_row(row)
-            if parsed is None:
-                continue
-            start_ns, end_ns, name = parsed
-            clipped_start = max(start_ns, analysis_start)
-            clipped_end = min(end_ns, analysis_end)
-            if clipped_end > clipped_start:
-                family = family_for_name(name, selected)
-                column = family_index[family]
-                first_window = (clipped_start - analysis_start) // window_ns
-                last_window = (clipped_end - 1 - analysis_start) // window_ns
-                for window in range(first_window, last_window + 1):
-                    window_start = analysis_start + window * window_ns
-                    window_end = min(window_start + window_ns, analysis_end)
-                    overlap_start = max(clipped_start, window_start)
-                    overlap_end = min(clipped_end, window_end)
-                    activity_ns[window, column] += overlap_end - overlap_start
-                    previous_end = union_end_ns[window]
-                    if overlap_end > previous_end:
-                        uncovered_start = max(overlap_start, previous_end)
-                        union_active_ns[window] += overlap_end - uncovered_start
-                        union_end_ns[window] = overlap_end
-            valid_index += 1
-            if valid_index % 1_000_000 == 0:
-                print(f"Aggregated {valid_index} kernel events...", flush=True)
-
-    return activity_ns, union_active_ns
-
-
-def build_windows(
-    samples,
-    activity_ns,
-    union_active_ns,
-    analysis_start,
-    analysis_end,
-    window_ns,
-    idle_power_mw,
-):
-    rows = []
-    dynamic_power_w = []
-    for index in range(len(activity_ns)):
-        start_ns = analysis_start + index * window_ns
-        end_ns = min(start_ns + window_ns, analysis_end)
-        duration_ns = end_ns - start_ns
-        device_energy_mj, dynamic_energy_mj = integrate_range(
-            samples, start_ns, end_ns, idle_power_mw
-        )
-        duration_seconds = duration_ns / NS_PER_SECOND
-        active_fraction = min(1.0, union_active_ns[index] / duration_ns)
-        assignable_energy_mj = dynamic_energy_mj * active_fraction
-        rows.append(
-            {
-                "window_index": index,
-                "start_ns": start_ns,
-                "end_ns": end_ns,
-                "duration_ns": duration_ns,
-                "kernel_active_fraction": active_fraction,
-                "device_energy_mj": device_energy_mj,
-                "dynamic_energy_mj": dynamic_energy_mj,
-                "assignable_energy_mj": assignable_energy_mj,
-                "unassigned_energy_mj": dynamic_energy_mj
-                - assignable_energy_mj,
-            }
-        )
-        dynamic_power_w.append(dynamic_energy_mj / duration_seconds / 1000.0)
-    return rows, np.asarray(dynamic_power_w, dtype=np.float64)
 
 
 def sample_lower_truncated_normal(mean, standard_deviation, rng):
@@ -298,118 +210,141 @@ def regression_metrics(actual, predicted):
     }
 
 
+def attribution_pool_mj(window_rows, attribution):
+    """Energy each window hands to the allocation step under ``attribution``."""
+    if attribution == "model":
+        for row in window_rows:
+            row["assignable_energy_mj"] = row["dynamic_energy_mj"]
+            row["unassigned_energy_mj"] = 0.0
+    return np.asarray(
+        [row["assignable_energy_mj"] for row in window_rows], dtype=np.float64
+    )
+
+
 def posterior_energy_allocation(
-    coefficient_draws, activity_ns, window_rows, window_ns
+    coefficient_draws, activity_ns, pool_energy_mj, window_ns, attribution="model"
 ):
+    """Split each window's energy pool among families for every posterior draw.
+
+    Returns per-window family mean/lower/upper (mJ), per-draw family totals,
+    the per-window baseline (intercept) mean and per-draw baseline totals.
+    """
+    if attribution not in ATTRIBUTION_MODES:
+        raise ValueError(f"Unknown attribution mode: {attribution}")
+    baseline_draws = coefficient_draws[:, 0]
     family_draws = coefficient_draws[:, 1:]
     draw_count, family_count = family_draws.shape
-    window_count = len(window_rows)
+    window_count = len(pool_energy_mj)
     means = np.zeros((window_count, family_count), dtype=np.float64)
     lowers = np.zeros_like(means)
     uppers = np.zeros_like(means)
     family_total_draws = np.zeros((draw_count, family_count), dtype=np.float64)
+    baseline_mean = np.zeros(window_count, dtype=np.float64)
+    baseline_total_draws = np.zeros(draw_count, dtype=np.float64)
 
     for window in range(window_count):
         activity_fraction = activity_ns[window] / window_ns
         scores = family_draws * activity_fraction[None, :]
-        totals = scores.sum(axis=1)
+        denominators = scores.sum(axis=1)
+        if attribution == "model":
+            denominators = denominators + baseline_draws
         active = activity_fraction > 0.0
-        zero = totals <= 0.0
-        if np.any(zero) and np.any(active):
-            scores[zero] = activity_fraction
-            totals[zero] = activity_fraction.sum()
+        degenerate = denominators <= 0.0
+        if np.any(degenerate) and np.any(active):
+            scores[degenerate] = activity_fraction
+            denominators[degenerate] = activity_fraction.sum()
         allocation = np.zeros_like(scores)
-        positive = totals > 0.0
+        positive = denominators > 0.0
         allocation[positive] = (
-            scores[positive] / totals[positive, None]
-            * window_rows[window]["assignable_energy_mj"]
+            scores[positive] / denominators[positive, None]
+            * pool_energy_mj[window]
         )
         means[window] = allocation.mean(axis=0)
         lowers[window], uppers[window] = np.quantile(
             allocation, [0.025, 0.975], axis=0
         )
         family_total_draws += allocation
+        baseline = pool_energy_mj[window] - allocation.sum(axis=1)
+        baseline_mean[window] = baseline.mean()
+        baseline_total_draws += baseline
 
-    return means, lowers, uppers, family_total_draws
+    return {
+        "mean": means,
+        "lower": lowers,
+        "upper": uppers,
+        "family_total_draws": family_total_draws,
+        "baseline_mean": baseline_mean,
+        "baseline_total_draws": baseline_total_draws,
+    }
 
 
-def write_csv(path, rows, fieldnames):
-    with path.open("w", newline="", encoding="utf-8") as destination:
-        writer = csv.DictWriter(destination, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+def apply_allocation_to_rows(window_rows, allocation):
+    for row, family_energy, baseline in zip(
+        window_rows, allocation["mean"], allocation["baseline_mean"]
+    ):
+        row["bayesian_attributed_energy_mean_mj"] = float(family_energy.sum())
+        row["baseline_energy_mean_mj"] = float(baseline)
+
+
+def energy_accounting(window_rows, allocation):
+    """Energy totals; dynamic = attributed + baseline + unassigned."""
+    total_dynamic = sum(row["dynamic_energy_mj"] for row in window_rows)
+    total_assignable = sum(row["assignable_energy_mj"] for row in window_rows)
+    attributed = float(allocation["mean"].sum())
+    baseline_draws = allocation["baseline_total_draws"]
+    baseline_lower, baseline_upper = np.quantile(baseline_draws, [0.025, 0.975])
+    baseline = float(baseline_draws.mean())
+    return {
+        "measured_dynamic_energy_mj": total_dynamic,
+        "assignable_dynamic_energy_mj": total_assignable,
+        "unassigned_dynamic_energy_mj": total_dynamic - total_assignable,
+        "attributed_posterior_mean_mj": attributed,
+        "baseline_posterior_mean_mj": baseline,
+        "baseline_posterior_lower_95_mj": float(baseline_lower),
+        "baseline_posterior_upper_95_mj": float(baseline_upper),
+        "conservation_error_mj": total_assignable - attributed - baseline,
+    }
 
 
 def write_event_attribution(
-    kernel_path,
+    table,
+    columns,
+    families,
     output_path,
-    selected,
-    family_index,
     activity_ns,
-    energy_mean,
-    energy_lower,
-    energy_upper,
+    allocation,
     analysis_start,
     analysis_end,
     window_ns,
 ):
-    event_count = 0
-    attributed_total = 0.0
-    with kernel_path.open(newline="", encoding="utf-8") as source, output_path.open(
-        "w", newline="", encoding="utf-8"
-    ) as destination:
-        reader = csv.DictReader(source)
-        fields = list(reader.fieldnames or []) + [
-            "kernel_family",
-            "bayesian_energy_mean_mj",
-            "bayesian_energy_lower_95_mj",
-            "bayesian_energy_upper_95_mj",
-        ]
-        writer = csv.DictWriter(destination, fieldnames=fields)
-        writer.writeheader()
-        for row in reader:
-            parsed = parse_kernel_row(row)
-            if parsed is None:
-                continue
-            start_ns, end_ns, name = parsed
-            family = family_for_name(name, selected)
-            column = family_index[family]
-            clipped_start = max(start_ns, analysis_start)
-            clipped_end = min(end_ns, analysis_end)
-            mean = 0.0
-            lower = 0.0
-            upper = 0.0
-            if clipped_end > clipped_start:
-                first_window = (clipped_start - analysis_start) // window_ns
-                last_window = (clipped_end - 1 - analysis_start) // window_ns
-                for window in range(first_window, last_window + 1):
-                    window_start = analysis_start + window * window_ns
-                    window_end = min(window_start + window_ns, analysis_end)
-                    overlap = max(
-                        0,
-                        min(clipped_end, window_end)
-                        - max(clipped_start, window_start),
-                    )
-                    family_duration = activity_ns[window, column]
-                    if overlap and family_duration > 0.0:
-                        fraction = overlap / family_duration
-                        mean += energy_mean[window, column] * fraction
-                        lower += energy_lower[window, column] * fraction
-                        upper += energy_upper[window, column] * fraction
-            row.update(
-                {
-                    "kernel_family": family,
-                    "bayesian_energy_mean_mj": mean,
-                    "bayesian_energy_lower_95_mj": lower,
-                    "bayesian_energy_upper_95_mj": upper,
-                }
-            )
-            writer.writerow(row)
-            attributed_total += mean
-            event_count += 1
-            if event_count % 1_000_000 == 0:
-                print(f"Wrote {event_count} attributed kernel events...", flush=True)
-    return event_count, attributed_total
+    """Write per-event energy; join back to the CUPTI trace via event_id."""
+    mean, lower, upper = distribute_to_events(
+        table, columns, activity_ns,
+        [allocation["mean"], allocation["lower"], allocation["upper"]],
+        analysis_start, analysis_end, window_ns,
+    )
+    family_names = np.asarray(families, dtype=object)
+    for offset in range(0, len(table), EVENT_CHUNK):
+        chunk = slice(offset, offset + EVENT_CHUNK)
+        frame = pd.DataFrame(
+            {
+                "start_ns": table.start_ns[chunk],
+                "end_ns": table.end_ns[chunk],
+                "kernel_family": family_names[columns[chunk]],
+                "bayesian_energy_mean_mj": mean[chunk],
+                "bayesian_energy_lower_95_mj": lower[chunk],
+                "bayesian_energy_upper_95_mj": upper[chunk],
+            }
+        )
+        if table.event_ids is not None:
+            frame.insert(0, "event_id", table.event_ids[chunk])
+        frame.to_csv(
+            output_path,
+            mode="w" if offset == 0 else "a",
+            header=offset == 0,
+            index=False,
+        )
+    return len(table), float(mean.sum())
 
 
 def short_kernel_name(name, limit=52):
@@ -444,16 +379,11 @@ def short_kernel_name(name, limit=52):
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
 
-def create_plots(output_dir, window_rows, family_rows, coefficient_rows):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as error:
-        raise RuntimeError("--plot requires matplotlib") from error
-
+def plot_kernel_family_energy(plt, output_dir, family_rows):
     top_families = family_rows[: min(15, len(family_rows))]
     labels = [short_kernel_name(row["kernel_family"]) for row in top_families]
-    means = np.asarray(
-        [row["energy_posterior_mean_mj"] / 1000.0 for row in top_families]
+    medians = np.asarray(
+        [row["energy_posterior_median_mj"] / 1000.0 for row in top_families]
     )
     lowers = np.asarray(
         [row["energy_posterior_lower_95_mj"] / 1000.0 for row in top_families]
@@ -463,11 +393,11 @@ def create_plots(output_dir, window_rows, family_rows, coefficient_rows):
     )
     positions = np.arange(len(top_families))[::-1]
     figure, axis = plt.subplots(figsize=(11, 7))
-    axis.barh(positions, means, color="tab:blue", alpha=0.8)
+    axis.barh(positions, medians, color="tab:blue", alpha=0.8)
     axis.errorbar(
-        means,
+        medians,
         positions,
-        xerr=np.vstack([means - lowers, uppers - means]),
+        xerr=np.vstack([medians - lowers, uppers - medians]),
         fmt="none",
         ecolor="black",
         capsize=3,
@@ -475,7 +405,7 @@ def create_plots(output_dir, window_rows, family_rows, coefficient_rows):
         label="95% credible interval",
     )
     axis.set_yticks(positions, labels)
-    axis.set_xlabel("Attributed energy (J)")
+    axis.set_xlabel("Attributed energy posterior median (J)")
     axis.set_title("Bayesian energy attribution by kernel family")
     axis.grid(axis="x", alpha=0.25)
     axis.legend()
@@ -483,13 +413,15 @@ def create_plots(output_dir, window_rows, family_rows, coefficient_rows):
     figure.savefig(output_dir / "bayesian_kernel_family_energy.png", dpi=180)
     plt.close(figure)
 
+
+def build_plot_series(window_rows):
     elapsed_seconds = np.asarray(
         [
             (row["start_ns"] - window_rows[0]["start_ns"]) / NS_PER_SECOND
             for row in window_rows
         ]
     )
-    measured = np.asarray(
+    measured_power = np.asarray(
         [
             row["dynamic_energy_mj"]
             / (row["duration_ns"] / NS_PER_SECOND)
@@ -497,92 +429,456 @@ def create_plots(output_dir, window_rows, family_rows, coefficient_rows):
             for row in window_rows
         ]
     )
-    predicted = np.asarray(
+    predicted_power = np.asarray(
         [row["predicted_dynamic_power_mean_w"] for row in window_rows]
     )
-    predicted_lower = np.asarray(
+    predicted_power_lower = np.asarray(
         [row["predicted_dynamic_power_lower_95_w"] for row in window_rows]
     )
-    predicted_upper = np.asarray(
+    predicted_power_upper = np.asarray(
         [row["predicted_dynamic_power_upper_95_w"] for row in window_rows]
     )
+    window_seconds = np.asarray(
+        [row["duration_ns"] / NS_PER_SECOND for row in window_rows]
+    )
+    measured_energy = measured_power * window_seconds
+    predicted_energy = predicted_power * window_seconds
+    predicted_energy_lower = predicted_power_lower * window_seconds
+    predicted_energy_upper = predicted_power_upper * window_seconds
     test_start = next(
         (index for index, row in enumerate(window_rows) if row["split"] == "test"),
         len(window_rows),
     )
-    figure, axis = plt.subplots(figsize=(12, 5))
-    axis.plot(elapsed_seconds, measured, label="Measured NVML power", linewidth=1.2)
-    axis.plot(elapsed_seconds, predicted, label="Posterior mean", linewidth=1.2)
-    axis.fill_between(
-        elapsed_seconds,
-        predicted_lower,
-        predicted_upper,
-        alpha=0.2,
-        label="95% credible interval",
+    return {
+        "elapsed_seconds": elapsed_seconds,
+        "measured_power": measured_power,
+        "predicted_power": predicted_power,
+        "predicted_power_lower": predicted_power_lower,
+        "predicted_power_upper": predicted_power_upper,
+        "measured_energy": measured_energy,
+        "predicted_energy": predicted_energy,
+        "predicted_energy_lower": predicted_energy_lower,
+        "predicted_energy_upper": predicted_energy_upper,
+        "test_start": test_start,
+    }
+
+
+def session_row_groups(window_rows):
+    names = list(dict.fromkeys(row.get("session", "session") for row in window_rows))
+    groups = []
+    for name in names:
+        rows = [
+            row for row in window_rows if row.get("session", "session") == name
+        ]
+        rows.sort(key=lambda row: row.get("session_window_index", row["window_index"]))
+        groups.append((name, rows))
+    return groups
+
+
+def plot_kernel_power_fit(plt, output_dir, window_rows):
+    groups = session_row_groups(window_rows)
+    figure, axes = plt.subplots(
+        len(groups), 1, figsize=(12, max(5, 2.3 * len(groups))),
+        squeeze=False, constrained_layout=True,
     )
-    if test_start < len(window_rows):
-        axis.axvline(
-            elapsed_seconds[test_start],
-            color="black",
-            linestyle="--",
-            linewidth=1,
-            label="Temporal test split",
+    for group_index, (name, rows) in enumerate(groups):
+        axis = axes[group_index, 0]
+        series = build_plot_series(rows)
+        axis.plot(
+            series["elapsed_seconds"], series["measured_power"],
+            label="Measured NVML dynamic power", linewidth=1.1,
         )
-    axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Dynamic power (W)")
-    axis.set_title("Kernel-family Bayesian power fit")
-    axis.grid(alpha=0.25)
-    axis.legend()
-    figure.tight_layout()
+        axis.plot(
+            series["elapsed_seconds"], series["predicted_power"],
+            label="Posterior mean", linewidth=1.1,
+        )
+        axis.fill_between(
+            series["elapsed_seconds"], series["predicted_power_lower"],
+            series["predicted_power_upper"], alpha=0.2,
+            label="95% credible interval",
+        )
+        test_start = series["test_start"]
+        if test_start < len(series["elapsed_seconds"]):
+            axis.axvspan(
+                series["elapsed_seconds"][test_start],
+                series["elapsed_seconds"][-1], color="grey", alpha=0.12,
+                label="Temporal holdout",
+            )
+        axis.set_ylabel("Power (W)")
+        axis.set_title(name if len(groups) > 1 else "Kernel-family Bayesian power fit")
+        axis.grid(alpha=0.25)
+    axes[0, 0].legend(fontsize=8, ncol=4, loc="best")
+    axes[-1, 0].set_xlabel("Elapsed time (s)")
+    if len(groups) > 1:
+        figure.suptitle("Multi-session kernel-family Bayesian power fit")
     figure.savefig(output_dir / "bayesian_kernel_power_fit.png", dpi=180)
     plt.close(figure)
 
-    attributed = np.asarray(
-        [row["bayesian_attributed_energy_mean_mj"] / 1000.0 for row in window_rows]
+
+def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
+    test_start = series["test_start"]
+    actual = series["measured_energy"][test_start:]
+    expected = series["predicted_energy"][test_start:]
+    lower = series["predicted_energy_lower"][test_start:]
+    upper = series["predicted_energy_upper"][test_start:]
+    if not len(actual):
+        raise ValueError("Temporal holdout contains no windows to plot")
+
+    figure, (fit_axis, residual_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(9, 9),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1]},
     )
-    unassigned = np.asarray(
-        [row["unassigned_energy_mj"] / 1000.0 for row in window_rows]
+    test_rows = window_rows[test_start:]
+    session_names = list(
+        dict.fromkeys(row.get("session", "session") for row in test_rows)
     )
-    figure, axis = plt.subplots(figsize=(12, 5))
-    axis.stackplot(
-        elapsed_seconds,
-        attributed,
-        unassigned,
-        labels=["Attributed to kernels", "Unassigned"],
-        colors=["tab:green", "tab:gray"],
-        alpha=0.8,
+    colors = plt.get_cmap("tab20", len(session_names))
+    for session_index, name in enumerate(session_names):
+        indices = np.asarray(
+            [
+                index for index, row in enumerate(test_rows)
+                if row.get("session", "session") == name
+            ]
+        )
+        color = colors(session_index)
+        fit_axis.vlines(
+            actual[indices], lower[indices], upper[indices],
+            color=color, alpha=0.18, linewidth=0.8,
+        )
+        fit_axis.scatter(
+            actual[indices], expected[indices], color=color, alpha=0.7,
+            label=name if len(session_names) > 1 else "Temporal holdout windows",
+        )
+        residual_axis.scatter(
+            actual[indices], expected[indices] - actual[indices],
+            color=color, alpha=0.7,
+        )
+    minimum = float(min(actual.min(), expected.min(), lower.min()))
+    maximum = float(max(actual.max(), expected.max(), upper.max()))
+    fit_axis.plot(
+        [minimum, maximum],
+        [minimum, maximum],
+        color="black",
+        linestyle="--",
+        linewidth=1.2,
+        label="Central line: predicted = measured",
     )
-    axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Energy per window (J)")
-    axis.set_title("Measured dynamic energy partition")
-    axis.grid(alpha=0.2)
-    axis.legend(loc="upper right")
+    fit_axis.set_ylabel("Posterior predicted energy (J/window)")
+    fit_axis.set_title("Kernel-energy temporal holdout predictions")
+    fit_axis.grid(alpha=0.2)
+    fit_axis.legend()
+    residual_axis.axhline(
+        0.0, color="black", linestyle="--", linewidth=1.2
+    )
+    residual_axis.set_xlabel("Measured dynamic energy (J/window)")
+    residual_axis.set_ylabel("Distance from central line (J/window)")
+    residual_axis.grid(alpha=0.2)
     figure.tight_layout()
-    figure.savefig(output_dir / "bayesian_energy_partition.png", dpi=180)
+    figure.savefig(
+        output_dir / "bayesian_kernel_energy_test_scatter.png", dpi=180
+    )
     plt.close(figure)
 
 
-def main():
-    args = parse_args()
+def session_holdout_energy(window_rows, prediction_draws):
+    """Per-session totals over holdout windows: measured vs predicted energy.
+
+    The predicted interval sums each posterior draw over the session's windows
+    before taking quantiles, so it is the credible interval of the total and
+    not a sum of per-window bounds. Power ranges skip truncated windows
+    (shorter than half the session's longest) whose power is noisy.
+    """
+    indices_by_session = {}
+    for index, row in enumerate(window_rows):
+        if row["split"] == "test":
+            indices_by_session.setdefault(
+                row.get("session", "session"), []
+            ).append(index)
+
+    session_rows = []
+    for name, indices in indices_by_session.items():
+        seconds = np.asarray(
+            [window_rows[index]["duration_ns"] for index in indices]
+        ) / NS_PER_SECOND
+        measured_j = np.asarray(
+            [window_rows[index]["dynamic_energy_mj"] for index in indices]
+        ) / 1000.0
+        window_draws = prediction_draws[:, indices]
+        total_draws = window_draws @ seconds
+        lower, upper = np.quantile(total_draws, [0.025, 0.975])
+        measured_power = measured_j / seconds
+        predicted_power = window_draws.mean(axis=0)
+        full = seconds >= 0.5 * seconds.max()
+        measured_total = float(measured_j.sum())
+        predicted_total = float(total_draws.mean())
+        session_rows.append(
+            {
+                "session": name,
+                "test_windows": len(indices),
+                "test_seconds": float(seconds.sum()),
+                "measured_energy_j": measured_total,
+                "predicted_energy_mean_j": predicted_total,
+                "predicted_energy_lower_95_j": float(lower),
+                "predicted_energy_upper_95_j": float(upper),
+                "energy_error_pct": (
+                    100.0 * (predicted_total - measured_total) / measured_total
+                    if measured_total > 0.0
+                    else None
+                ),
+                "measured_power_mean_w": measured_total / float(seconds.sum()),
+                "measured_power_min_w": float(measured_power[full].min()),
+                "measured_power_max_w": float(measured_power[full].max()),
+                "predicted_power_mean_w": predicted_total / float(seconds.sum()),
+                "predicted_power_min_w": float(predicted_power[full].min()),
+                "predicted_power_max_w": float(predicted_power[full].max()),
+            }
+        )
+
+    measured = np.asarray([row["measured_energy_j"] for row in session_rows])
+    predicted = np.asarray([row["predicted_energy_mean_j"] for row in session_rows])
+    errors = [
+        abs(row["energy_error_pct"])
+        for row in session_rows
+        if row["energy_error_pct"] is not None
+    ]
+    covered = [
+        row["predicted_energy_lower_95_j"]
+        <= row["measured_energy_j"]
+        <= row["predicted_energy_upper_95_j"]
+        for row in session_rows
+    ]
+    total_variation = float(np.sum((measured - measured.mean()) ** 2))
+    session_metrics = {
+        "sessions": len(session_rows),
+        "energy_r_squared": (
+            1.0 - float(np.sum((measured - predicted) ** 2)) / total_variation
+            if len(session_rows) > 1 and total_variation > 0.0
+            else None
+        ),
+        "mean_absolute_energy_error_pct": (
+            float(np.mean(errors)) if errors else None
+        ),
+        "max_absolute_energy_error_pct": float(max(errors)) if errors else None,
+        "total_energy_error_pct": (
+            100.0 * float(predicted.sum() - measured.sum()) / float(measured.sum())
+        ),
+        "credible_interval_95_coverage": float(np.mean(covered)),
+    }
+    return session_rows, session_metrics
+
+
+def short_session_name(name):
+    return re.sub(r"-[0-9a-f]{10,}$", "", name)
+
+
+MEASURED_COLOR = "#52514e"
+PREDICTED_COLOR = "#2a78d6"
+REFERENCE_COLOR = "#8a8984"
+
+
+def format_optional(value, pattern):
+    return "n/a" if value is None else pattern.format(value)
+
+
+def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_metrics):
+    # Numbered markers (shared with the power panel's ticks) stay legible when
+    # sessions with similar totals cluster; full names would collide.
+    rows = sorted(
+        session_rows, key=lambda row: row["measured_power_mean_w"], reverse=True
+    )
+    numbers = [str(index + 1) for index in range(len(rows))]
+    labels = [
+        f"{number}  {short_session_name(row['session'])}"
+        for number, row in zip(numbers, rows)
+    ]
+    measured = np.asarray([row["measured_energy_j"] for row in rows])
+    predicted = np.asarray([row["predicted_energy_mean_j"] for row in rows])
+    lower = np.asarray([row["predicted_energy_lower_95_j"] for row in rows])
+    upper = np.asarray([row["predicted_energy_upper_95_j"] for row in rows])
+
+    figure, (energy_axis, power_axis) = plt.subplots(
+        1, 2, figsize=(15, max(6.0, 0.5 * len(rows) + 3.0)),
+        gridspec_kw={"width_ratios": [1.15, 1.0]},
+    )
+
+    limit_low = 0.0
+    limit_high = 1.05 * float(max(measured.max(), upper.max()))
+    energy_axis.plot(
+        [limit_low, limit_high], [limit_low, limit_high],
+        color=REFERENCE_COLOR, linestyle="--", linewidth=1.2,
+        label="Predicted = measured",
+    )
+    energy_axis.errorbar(
+        measured, predicted,
+        yerr=np.vstack([predicted - lower, upper - predicted]),
+        fmt="o", color=PREDICTED_COLOR, ecolor=PREDICTED_COLOR,
+        markersize=7, capsize=3, linewidth=1.4, elinewidth=1.4,
+        markeredgecolor="white", markeredgewidth=1.0,
+        label="Posterior mean ± 95% credible interval",
+    )
+    for index, (number, x_value, y_value) in enumerate(
+        zip(numbers, measured, predicted)
+    ):
+        energy_axis.annotate(
+            number, (x_value, y_value),
+            xytext=(-12, 2) if index % 2 else (6, -10),
+            textcoords="offset points", fontsize=8, fontweight="bold",
+            color=MEASURED_COLOR,
+        )
+    energy_axis.set_xlim(limit_low, limit_high)
+    energy_axis.set_ylim(limit_low, limit_high)
+    energy_axis.set_aspect("equal", adjustable="box")
+    energy_axis.set_xlabel("Measured dynamic energy in holdout (J)")
+    energy_axis.set_ylabel("Predicted dynamic energy in holdout (J)")
+    energy_axis.set_title("Total holdout energy per session")
+    energy_axis.grid(alpha=0.2)
+    energy_axis.legend(loc="lower right", fontsize=8)
+    energy_axis.text(
+        0.03, 0.97,
+        "\n".join(
+            [
+                "Per session (energy totals):",
+                "  R² = "
+                + format_optional(session_metrics["energy_r_squared"], "{:.4f}"),
+                "  Mean |error| = "
+                + format_optional(
+                    session_metrics["mean_absolute_energy_error_pct"], "{:.1f}%"
+                ),
+                "  All sessions: "
+                + format_optional(
+                    session_metrics["total_energy_error_pct"], "{:+.1f}%"
+                ),
+                "  95% interval coverage = "
+                + f"{100.0 * session_metrics['credible_interval_95_coverage']:.0f}%",
+                "Per window (power):",
+                "  R² = " + format_optional(test_metrics["r_squared"], "{:.4f}"),
+                f"  RMSE = {test_metrics['rmse_w']:.3f} W",
+            ]
+        ),
+        transform=energy_axis.transAxes, va="top", fontsize=9,
+        family="monospace",
+        bbox={"facecolor": "white", "alpha": 0.9, "edgecolor": "#d6d5d0"},
+    )
+
+    positions = np.arange(len(rows))[::-1]
+    offset = 0.17
+    power_axis.hlines(
+        positions + offset,
+        [row["measured_power_min_w"] for row in rows],
+        [row["measured_power_max_w"] for row in rows],
+        color=MEASURED_COLOR, linewidth=2.0, label="Measured min–max",
+    )
+    power_axis.plot(
+        [row["measured_power_mean_w"] for row in rows], positions + offset,
+        "o", color=MEASURED_COLOR, markersize=7, markeredgecolor="white",
+        label="Measured mean",
+    )
+    power_axis.hlines(
+        positions - offset,
+        [row["predicted_power_min_w"] for row in rows],
+        [row["predicted_power_max_w"] for row in rows],
+        color=PREDICTED_COLOR, linewidth=2.0, label="Predicted min–max",
+    )
+    power_axis.plot(
+        [row["predicted_power_mean_w"] for row in rows], positions - offset,
+        "o", color=PREDICTED_COLOR, markersize=7, markeredgecolor="white",
+        label="Predicted mean",
+    )
+    power_axis.set_yticks(positions, labels, fontsize=8)
+    power_axis.set_xlabel("Dynamic power per window in holdout (W)")
+    power_axis.set_title("Power range per session")
+    power_axis.grid(axis="x", alpha=0.2)
+    power_axis.legend(loc="lower right", fontsize=8)
+
+    figure.suptitle("Temporal holdout accuracy per session")
+    figure.tight_layout()
+    figure.savefig(output_dir / "bayesian_session_energy.png", dpi=180)
+    plt.close(figure)
+
+
+def create_plots(
+    output_dir, window_rows, family_rows,
+    session_rows=None, session_metrics=None, test_metrics=None,
+):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as error:
+        raise RuntimeError("--plot requires matplotlib") from error
+
+    for obsolete_name in (
+        "bayesian_energy_partition.png",
+        "bayesian_kernel_energy_temporal_holdout.png",
+    ):
+        (output_dir / obsolete_name).unlink(missing_ok=True)
+
+    plot_kernel_family_energy(plt, output_dir, family_rows)
+    series = build_plot_series(window_rows)
+    plot_kernel_power_fit(plt, output_dir, window_rows)
+    plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series)
+    if session_rows:
+        plot_session_energy(
+            plt, output_dir, session_rows, session_metrics, test_metrics
+        )
+
+
+def validate_common_args(args):
     if args.window_ms <= 0.0:
         raise ValueError("--window-ms must be greater than zero")
     if args.idle_power_mw < 0.0:
         raise ValueError("--idle-power-mw cannot be negative")
-    if args.max_families < 2:
-        raise ValueError("--max-families must be at least 2")
-    if not 0.5 <= args.train_fraction < 1.0:
-        raise ValueError("--train-fraction must be in [0.5, 1.0)")
     if args.prior_scale_w <= 0.0 or args.noise_prior_scale_w <= 0.0:
         raise ValueError("Prior scales must be greater than zero")
     if args.burn_in < 0 or args.posterior_draws < 100 or args.thin < 1:
         raise ValueError("Invalid MCMC settings")
+    if args.min_windows_per_parameter <= 0.0:
+        raise ValueError("--min-windows-per-parameter must be greater than zero")
+
+
+def split_point(window_count, train_fraction):
+    if window_count < 7:
+        raise ValueError(
+            f"Only {window_count} windows overlap kernels and telemetry; at "
+            "least 7 are required for a temporal holdout"
+        )
+    train_count = int(window_count * train_fraction)
+    return min(max(train_count, 5), window_count - 2)
+
+
+def coefficient_summary_rows(terms, coefficient_draws, column_scale):
+    rows = []
+    for index, term in enumerate(terms):
+        values = coefficient_draws[:, index]
+        lower, upper = np.quantile(values, [0.025, 0.975])
+        rows.append(
+            {
+                "term": term,
+                "posterior_power_mean_w": float(values.mean()),
+                "posterior_power_lower_95_w": float(lower),
+                "posterior_power_upper_95_w": float(upper),
+                "activity_rms_scale": float(column_scale[index]),
+            }
+        )
+    return rows
+
+
+def main():
+    args = parse_args()
+    validate_common_args(args)
+    if args.max_families < 2:
+        raise ValueError("--max-families must be at least 2")
+    if not 0.5 <= args.train_fraction < 1.0:
+        raise ValueError("--train-fraction must be in [0.5, 1.0)")
 
     window_ns = int(args.window_ms * 1_000_000)
-    samples = load_telemetry(args.telemetry)
-    print("Scanning kernel families...", flush=True)
-    metadata = scan_kernel_families(args.kernels, args.max_families)
-    analysis_start = max(samples[0][0], metadata["first_start"])
-    analysis_end = min(samples[-1][0], metadata["last_end"])
+    trace = load_power_trace(args.telemetry)
+    print("Loading kernel events...", flush=True)
+    table = load_kernels(args.kernels, load_event_ids=not args.skip_event_output)
+    metadata = scan_kernel_families(table, args.max_families)
+    analysis_start = max(trace.first_ns, metadata["first_start"])
+    analysis_end = min(trace.last_ns, metadata["last_end"])
     if analysis_end <= analysis_start:
         raise ValueError("Telemetry and kernel timelines do not overlap")
 
@@ -593,16 +889,12 @@ def main():
         f"{metadata['valid_events']} events.",
         flush=True,
     )
+    columns = family_columns(table, metadata["selected"], family_index)
     activity_ns, union_active_ns = aggregate_family_activity(
-        args.kernels,
-        metadata["selected"],
-        family_index,
-        analysis_start,
-        analysis_end,
-        window_ns,
+        table, columns, len(families), analysis_start, analysis_end, window_ns
     )
     window_rows, target_power_w = build_windows(
-        samples,
+        trace,
         activity_ns,
         union_active_ns,
         analysis_start,
@@ -612,8 +904,12 @@ def main():
     )
     activity_fraction = activity_ns / window_ns
     design = np.column_stack([np.ones(len(activity_fraction)), activity_fraction])
-    train_count = int(len(window_rows) * args.train_fraction)
-    train_count = min(max(train_count, 5), len(window_rows) - 2)
+    train_count = split_point(len(window_rows), args.train_fraction)
+    terms = ["unattributed_baseline"] + families
+    identifiability = check_identifiability(
+        design, train_count, terms,
+        args.min_windows_per_parameter, args.allow_underdetermined,
+    )
     print(
         f"Sampling posterior with {train_count} training windows...", flush=True
     )
@@ -634,10 +930,12 @@ def main():
     predicted_lower, predicted_upper = np.quantile(
         prediction_draws, [0.025, 0.975], axis=0
     )
-    energy_mean, energy_lower, energy_upper, family_total_draws = (
-        posterior_energy_allocation(
-            coefficient_draws, activity_ns, window_rows, window_ns
-        )
+    allocation = posterior_energy_allocation(
+        coefficient_draws,
+        activity_ns,
+        attribution_pool_mj(window_rows, args.attribution),
+        window_ns,
+        args.attribution,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -648,29 +946,18 @@ def main():
                 "predicted_dynamic_power_mean_w": predicted_mean[index],
                 "predicted_dynamic_power_lower_95_w": predicted_lower[index],
                 "predicted_dynamic_power_upper_95_w": predicted_upper[index],
-                "bayesian_attributed_energy_mean_mj": energy_mean[index].sum(),
             }
         )
+    apply_allocation_to_rows(window_rows, allocation)
     write_csv(
         args.output_dir / "bayesian_energy_windows.csv",
         window_rows,
         list(window_rows[0]),
     )
 
-    coefficient_rows = []
-    terms = ["unattributed_baseline"] + families
-    for index, term in enumerate(terms):
-        values = coefficient_draws[:, index]
-        lower, upper = np.quantile(values, [0.025, 0.975])
-        coefficient_rows.append(
-            {
-                "term": term,
-                "posterior_power_mean_w": values.mean(),
-                "posterior_power_lower_95_w": lower,
-                "posterior_power_upper_95_w": upper,
-                "activity_rms_scale": column_scale[index],
-            }
-        )
+    coefficient_rows = coefficient_summary_rows(
+        terms, coefficient_draws, column_scale
+    )
     write_csv(
         args.output_dir / "bayesian_kernel_coefficients.csv",
         coefficient_rows,
@@ -678,6 +965,7 @@ def main():
     )
 
     family_rows = []
+    family_total_draws = allocation["family_total_draws"]
     for family, column in family_index.items():
         values = family_total_draws[:, column]
         lower, upper = np.quantile(values, [0.025, 0.975])
@@ -694,6 +982,7 @@ def main():
                 "event_count": events,
                 "total_duration_ns": duration,
                 "energy_posterior_mean_mj": values.mean(),
+                "energy_posterior_median_mj": np.median(values),
                 "energy_posterior_lower_95_mj": lower,
                 "energy_posterior_upper_95_mj": upper,
             }
@@ -705,44 +994,56 @@ def main():
         list(family_rows[0]),
     )
 
-    if args.plot:
-        create_plots(
-            args.output_dir, window_rows, family_rows, coefficient_rows
-        )
-
-    if args.skip_event_output:
-        event_count = metadata["valid_events"]
-        attributed_total = float(energy_mean.sum())
-    else:
-        print("Writing per-event Bayesian attribution...", flush=True)
-        event_count, attributed_total = write_event_attribution(
-            args.kernels,
-            args.output_dir / "bayesian_kernel_event_energy.csv",
-            metadata["selected"],
-            family_index,
-            activity_ns,
-            energy_mean,
-            energy_lower,
-            energy_upper,
-            analysis_start,
-            analysis_end,
-            window_ns,
-        )
-
     train_metrics = regression_metrics(
         target_power_w[:train_count], predicted_mean[:train_count]
     )
     test_metrics = regression_metrics(
         target_power_w[train_count:], predicted_mean[train_count:]
     )
-    total_dynamic = sum(row["dynamic_energy_mj"] for row in window_rows)
-    total_assignable = sum(row["assignable_energy_mj"] for row in window_rows)
+    session_rows, session_metrics = session_holdout_energy(
+        window_rows, prediction_draws
+    )
+    write_csv(
+        args.output_dir / "bayesian_session_energy.csv",
+        session_rows,
+        list(session_rows[0]),
+    )
+    if args.plot:
+        create_plots(
+            args.output_dir, window_rows, family_rows,
+            session_rows, session_metrics, test_metrics,
+        )
+
+    accounting = energy_accounting(window_rows, allocation)
+    event_count = metadata["valid_events"]
+    if not args.skip_event_output:
+        print("Writing per-event Bayesian attribution...", flush=True)
+        event_count, event_total = write_event_attribution(
+            table,
+            columns,
+            families,
+            args.output_dir / "bayesian_kernel_event_energy.csv",
+            activity_ns,
+            allocation,
+            analysis_start,
+            analysis_end,
+            window_ns,
+        )
+        accounting["event_attributed_posterior_mean_mj"] = event_total
+
     summary = {
         "model": "nonnegative_bayesian_kernel_family_regression",
         "inference": "Gibbs sampling with half-normal coefficient priors",
+        "attribution_mode": args.attribution,
         "attribution": (
-            "Posterior family contributions normalized within each window; "
-            "family energy distributed to events by temporal overlap"
+            "Each window's measured dynamic energy is split in proportion to "
+            "the posterior terms b0 + sum(beta_f * activity_f); the b0 share "
+            "is reported as baseline energy. Family energy is distributed to "
+            "events by temporal overlap."
+            if args.attribution == "model"
+            else "Legacy: dynamic energy scaled by the kernel-busy fraction is "
+            "split among families by beta_f * activity_f, ignoring b0. Family "
+            "energy is distributed to events by temporal overlap."
         ),
         "important_limitation": (
             "No direct per-kernel energy ground truth is available. Credible "
@@ -759,17 +1060,15 @@ def main():
         "test_windows": len(window_rows) - train_count,
         "kernel_events": event_count,
         "kernel_families": len(families),
-        "design_matrix_rank": int(np.linalg.matrix_rank(design[:train_count])),
+        "design_matrix_rank": identifiability["design_matrix_rank"],
         "design_parameters": int(design.shape[1]),
+        "identifiability": identifiability,
         "posterior_draws": args.posterior_draws,
         "posterior_noise_mean_w": float(np.sqrt(noise_draws).mean()),
         "train_power_metrics": train_metrics,
         "test_power_metrics": test_metrics,
-        "measured_dynamic_energy_mj": total_dynamic,
-        "assignable_dynamic_energy_mj": total_assignable,
-        "unassigned_dynamic_energy_mj": total_dynamic - total_assignable,
-        "attributed_posterior_mean_mj": attributed_total,
-        "conservation_error_mj": total_assignable - attributed_total,
+        "test_session_energy_metrics": session_metrics,
+        **accounting,
     }
     with (args.output_dir / "bayesian_kernel_energy_summary.json").open(
         "w", encoding="utf-8"
@@ -778,22 +1077,21 @@ def main():
         destination.write("\n")
 
     print("=== Bayesian kernel-energy attribution ===")
+    print(f"Attribution mode: {args.attribution}")
     print(f"Kernel families: {len(families)}")
     print(f"Kernel events: {event_count}")
     print(f"Test power RMSE: {test_metrics['rmse_w']:.3f} W")
     if test_metrics["r_squared"] is not None:
         print(f"Test power R-squared: {test_metrics['r_squared']:.4f}")
-    print(f"Measured dynamic energy: {total_dynamic:.3f} mJ")
-    print(f"Bayesian attributed energy: {attributed_total:.3f} mJ")
-    print(f"Unassigned energy: {total_dynamic - total_assignable:.3f} mJ")
-    print(f"Conservation error: {total_assignable - attributed_total:.6g} mJ")
-    if summary["design_matrix_rank"] < summary["design_parameters"]:
-        print(
-            "WARNING: Kernel-family activity is not fully identifiable "
-            f"(rank {summary['design_matrix_rank']} of "
-            f"{summary['design_parameters']}); interpret overlapping family "
-            "intervals conservatively."
-        )
+    print(f"Measured dynamic energy: {accounting['measured_dynamic_energy_mj']:.3f} mJ")
+    print(
+        "Bayesian attributed energy: "
+        f"{accounting['attributed_posterior_mean_mj']:.3f} mJ"
+    )
+    print(f"Baseline (b0) energy: {accounting['baseline_posterior_mean_mj']:.3f} mJ")
+    print(f"Unassigned energy: {accounting['unassigned_dynamic_energy_mj']:.3f} mJ")
+    print(f"Conservation error: {accounting['conservation_error_mj']:.6g} mJ")
+    print_identifiability_warnings(identifiability, short_kernel_name)
     print(f"Results: {args.output_dir}")
 
 

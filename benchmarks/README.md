@@ -18,6 +18,7 @@ are excluded from the reported experimental time.
 | `bench_memory` | Memory-bound | Global memory / DRAM | `size` |
 | `bench_stride` | Memory access | L1/L2/DRAM | `stride` |
 | `bench_transfer` | Transfer | PCIe/DMA path | `size`, `direction` |
+| `bench_power_cycle` | Phased power sweep | Compute / memory / mixed | `duty-cycle`, `period-ms` |
 
 `bench_compute` runs independent FP32 FMA dependency chains in registers and writes
 one result per thread. `bench_memory` repeatedly performs a full streaming copy.
@@ -127,3 +128,72 @@ benchmarks/
 
 Additional compute, memory, and mixed workloads can reuse the common parsing,
 timing, and CUDA error helpers without coupling them to a profiler.
+
+## Reproducible power sweeps
+
+`bench_power_cycle` executes one condition as a single CUDA process with explicit
+warm-up, measurement, and cooldown phases. Small CUDA marker kernels delimit the
+phases in `kernel_activity.csv`, so offline analysis uses the CUPTI timestamp domain
+instead of approximating boundaries from host time. Load is controlled by alternating
+GPU work and context-idle time; the benchmark does not change clocks or power limits
+and does not require root privileges.
+
+Build it with the rest of the benchmarks:
+
+```bash
+cmake -S benchmarks -B benchmarks/build
+cmake --build benchmarks/build -j --target bench_power_cycle
+```
+
+Create a deterministic pilot plan without running the GPU:
+
+```bash
+python3 benchmarks/scripts/run_power_sweep.py \
+  --config benchmarks/config/power_sweep.default.json \
+  --mode pilot \
+  --output-dir results/power-sweep/thor-pilot \
+  --plan-only
+```
+
+Execute that plan through the installed daemon and launcher:
+
+```bash
+python3 benchmarks/scripts/run_power_sweep.py \
+  --config benchmarks/config/power_sweep.default.json \
+  --mode pilot \
+  --launcher "$HOME/.local/bin/nvidia-process-metrics-launcher" \
+  --benchmark benchmarks/build/bench_power_cycle \
+  --output-dir results/power-sweep/thor-pilot
+```
+
+If the launcher requires non-default installation paths, add `--socket PATH` and
+`--library PATH`. Interrupted studies can be continued with `--resume`; completed
+conditions are not repeated.
+
+Summarize only the marker-delimited phases:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib-cache \
+python3 benchmarks/scripts/analyze_power_sweep.py \
+  --study-dir results/power-sweep/thor-pilot \
+  --target-step-w 20 \
+  --plot --strict
+```
+
+Use the pilot-selected levels directly for the randomized production study:
+
+```bash
+python3 benchmarks/scripts/run_power_sweep.py \
+  --config benchmarks/config/power_sweep.default.json \
+  --mode production \
+  --levels-file \
+    results/power-sweep/thor-pilot/summary/recommended_power_levels.csv \
+  --launcher "$HOME/.local/bin/nvidia-process-metrics-launcher" \
+  --benchmark benchmarks/build/bench_power_cycle \
+  --output-dir results/power-sweep/thor-production
+```
+
+The production mode uses five block-randomized repetitions. The default configuration
+contains 15-second warm-up and cooldown phases, a 45-second stable phase, 200 ms NVML
+windows, and a 100 ms duty-control period. Run the pilot first: requested duty cycle
+is a control variable, not a claim of a particular wattage on every GPU.

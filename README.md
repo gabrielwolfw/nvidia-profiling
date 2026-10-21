@@ -318,7 +318,7 @@ source .venv/bin/activate
 SESSION="results/<session-id>"
 
 Example:
-SESSION="results/65ce5662fe4a8-8480c-a0776b95"
+SESSION="results/v100-daemon/v100-profile-65daeb50146b1-2b26b-eaf1fc68"
 
 python3 analyze_kernel_pm_metrics.py \
   --pm-samples "$SESSION/pm_sampling.csv" \
@@ -335,6 +335,88 @@ python3 analyze_kernel_energy.py \
   --plot
 ```
 
+### Fit the multi-session Bayesian energy model
+
+`analyze_bayesian_energy.py` discovers complete profiling sessions below one
+directory, aggregates NVML telemetry and CUPTI kernel events into fixed
+windows, and fits a regularized Bayesian energy regression. The final portion
+of every session is reserved as an independent temporal holdout. PM Sampling
+data is not required.
+
+```bash
+python3 analyze_bayesian_energy.py \
+  --sessions-root results/thor \
+  --window-ms 200 \
+  --output-dir results/thor/bayesian-energy-analysis \
+  --plot
+```
+
+The output contains per-window energy predictions, session energy totals,
+posterior coefficients, a JSON validation summary, a multi-workload energy
+timeline, and measured-versus-predicted temporal holdout plots. Power plots
+are retained only as derived diagnostics of the energy posterior.
+
+### Attribute energy with the Bayesian kernel model
+
+`analyze_bayesian_kernel_energy.py` fits a non-negative Bayesian regression
+whose explanatory variables are the active durations of each kernel family.
+It then normalizes posterior family contributions inside every time window and
+distributes the measured NVML energy to individual CUPTI events by temporal
+overlap. Its primary result is per-kernel energy with posterior uncertainty.
+
+```bash
+python3 analyze_bayesian_kernel_energy.py \
+  --telemetry "$SESSION/gpu_telemetry.csv" \
+  --kernels "$SESSION/kernel_activity.csv" \
+  --window-ms 200 \
+  --idle-power-mw 0 \
+  --output-dir "$SESSION/bayesian-kernel-energy-analysis" \
+  --plot
+```
+
+The analysis writes posterior energy summaries by kernel family, model
+coefficients, window diagnostics, a JSON validation summary, and
+`bayesian_kernel_event_energy.csv`. The event file holds `event_id`,
+`start_ns`, `end_ns`, `kernel_family` and the posterior mean and 95% bounds of
+each event's energy; join it to `kernel_activity.csv` on `event_id` for the
+remaining CUPTI columns. The method conserves measured energy, but it does not
+create per-kernel ground truth: kernels that repeatedly execute together can
+remain statistically non-identifiable and consequently have wide credible
+intervals.
+
+By default (`--attribution model`) each window's measured dynamic energy is
+split in proportion to the fitted terms `b0 + sum(beta_f * activity_f)`; the
+intercept's share is reported as `baseline_posterior_mean_mj` instead of being
+charged to kernels. `--attribution active-fraction` reproduces the earlier
+rule, which scaled energy by the kernel-busy fraction and ignored `b0`.
+
+Before sampling, the script requires at least `--min-windows-per-parameter`
+(default 3) training windows per regression parameter and stops with a
+suggested `--max-families` otherwise; `--allow-underdetermined` overrides
+this. The summary's `identifiability` block lists terms that are linear
+combinations of others in training (prior-dominated) and families that are
+active in the holdout but never in training. The multi-session and transfer
+scripts accept the same options.
+
+Kernel activity is normalized by each window's real duration. The truncated
+final window of a session (shorter than `--min-window-fraction`, default 0.9,
+of `--window-ms`) has unreliable mean power, so it is marked `excluded` and
+left out of fitting, metrics and plots; its energy is still attributed.
+`--min-window-fraction 0` keeps every window.
+
+Window and session predictions carry two 95% intervals. The credible interval
+(`predicted_dynamic_power_lower/upper_95_w`) reflects only coefficient
+uncertainty; the predictive interval (`..._predictive_lower/upper_95_w`) adds
+the posterior observation noise and is the one expected to contain measured
+values. `test_power_metrics` and `test_session_energy_metrics` report the
+coverage of both. Session predictive totals assume independent window noise,
+so a systematic per-session bias can still fall outside them.
+
+The three kernel scripts share the `energy_attribution` package: `io` reads
+each CUPTI trace once into numpy columns and `windows` performs vectorized,
+chunked window aggregation. Run its tests with
+`python3 -m pytest energy_attribution/tests`.
+
 ### Analyze a shell-script benchmark
 
 The shell script adds the benchmark name to each CSV filename. For a compute
@@ -343,6 +425,8 @@ run, use the run ID printed by the script:
 ```bash
 source .venv/bin/activate
 RUN="results/<run-id>-compute"
+
+RUN="results/v100-daemon/65d4eb04bece8-384072-2cc325d0"
 
 python3 analyze_kernel_pm_metrics.py \
   --pm-samples "$RUN/pm_sampling_compute.csv" \

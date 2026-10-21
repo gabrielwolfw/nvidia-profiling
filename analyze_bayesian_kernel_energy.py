@@ -37,6 +37,7 @@ from energy_attribution.windows import (
 # "active-fraction": legacy rule that scales energy by the kernel-busy
 # fraction and splits all of it among families, ignoring b0.
 ATTRIBUTION_MODES = ("model", "active-fraction")
+DEFAULT_MIN_WINDOW_FRACTION = 0.9
 
 
 def parse_args():
@@ -97,6 +98,16 @@ def add_model_check_arguments(parser):
         "--allow-underdetermined",
         action="store_true",
         help="Fit even when training windows per parameter is below the minimum.",
+    )
+    parser.add_argument(
+        "--min-window-fraction",
+        type=float,
+        default=DEFAULT_MIN_WINDOW_FRACTION,
+        help=(
+            "Windows shorter than this fraction of --window-ms (the truncated "
+            "last window of a session) are excluded from fitting, metrics and "
+            "plots; their energy is still attributed. 0 keeps every window."
+        ),
     )
 
 
@@ -210,6 +221,79 @@ def regression_metrics(actual, predicted):
     }
 
 
+def interval_coverage(actual, lower, upper):
+    if not len(actual):
+        return None
+    return float(np.mean((actual >= lower) & (actual <= upper)))
+
+
+def summarize_predictions(prediction_draws, noise_draws, seed):
+    """Posterior mean plus credible and predictive 95% intervals per window.
+
+    ``prediction_draws`` reflect only coefficient uncertainty (credible). A
+    measured window also carries observation noise sigma, so intervals meant
+    to contain measurements add N(0, sigma^2) from the same draw (predictive).
+    Power is non-negative, so predictive draws are clipped at zero.
+    """
+    rng = np.random.default_rng(seed)
+    predictive_draws = np.maximum(
+        0.0,
+        prediction_draws
+        + rng.normal(size=prediction_draws.shape) * np.sqrt(noise_draws)[:, None],
+    )
+    credible_lower, credible_upper = np.quantile(
+        prediction_draws, [0.025, 0.975], axis=0
+    )
+    predictive_lower, predictive_upper = np.quantile(
+        predictive_draws, [0.025, 0.975], axis=0
+    )
+    return {
+        "mean": prediction_draws.mean(axis=0),
+        "credible_lower": credible_lower,
+        "credible_upper": credible_upper,
+        "predictive_lower": predictive_lower,
+        "predictive_upper": predictive_upper,
+        "prediction_draws": prediction_draws,
+        "predictive_draws": predictive_draws,
+    }
+
+
+def add_prediction_columns(window_rows, predictions):
+    for index, row in enumerate(window_rows):
+        row.update(
+            {
+                "predicted_dynamic_power_mean_w": predictions["mean"][index],
+                "predicted_dynamic_power_lower_95_w": (
+                    predictions["credible_lower"][index]
+                ),
+                "predicted_dynamic_power_upper_95_w": (
+                    predictions["credible_upper"][index]
+                ),
+                "predicted_dynamic_power_predictive_lower_95_w": (
+                    predictions["predictive_lower"][index]
+                ),
+                "predicted_dynamic_power_predictive_upper_95_w": (
+                    predictions["predictive_upper"][index]
+                ),
+            }
+        )
+
+
+def prediction_metrics(target_power_w, predictions, mask):
+    """Point-error metrics plus 95% interval coverage on the masked windows."""
+    actual = target_power_w[mask]
+    metrics = regression_metrics(actual, predictions["mean"][mask])
+    metrics["credible_interval_95_coverage"] = interval_coverage(
+        actual, predictions["credible_lower"][mask], predictions["credible_upper"][mask]
+    )
+    metrics["predictive_interval_95_coverage"] = interval_coverage(
+        actual,
+        predictions["predictive_lower"][mask],
+        predictions["predictive_upper"][mask],
+    )
+    return metrics
+
+
 def attribution_pool_mj(window_rows, attribution):
     """Energy each window hands to the allocation step under ``attribution``."""
     if attribution == "model":
@@ -222,9 +306,12 @@ def attribution_pool_mj(window_rows, attribution):
 
 
 def posterior_energy_allocation(
-    coefficient_draws, activity_ns, pool_energy_mj, window_ns, attribution="model"
+    coefficient_draws, activity_ns, pool_energy_mj, duration_ns, attribution="model"
 ):
     """Split each window's energy pool among families for every posterior draw.
+
+    ``duration_ns`` holds each window's real length, so activity fractions of
+    a truncated final window are not understated.
 
     Returns per-window family mean/lower/upper (mJ), per-draw family totals,
     the per-window baseline (intercept) mean and per-draw baseline totals.
@@ -243,7 +330,7 @@ def posterior_energy_allocation(
     baseline_total_draws = np.zeros(draw_count, dtype=np.float64)
 
     for window in range(window_count):
-        activity_fraction = activity_ns[window] / window_ns
+        activity_fraction = activity_ns[window] / duration_ns[window]
         scores = family_draws * activity_fraction[None, :]
         denominators = scores.sum(axis=1)
         if attribution == "model":
@@ -438,6 +525,12 @@ def build_plot_series(window_rows):
     predicted_power_upper = np.asarray(
         [row["predicted_dynamic_power_upper_95_w"] for row in window_rows]
     )
+    predictive_power_lower = np.asarray(
+        [row["predicted_dynamic_power_predictive_lower_95_w"] for row in window_rows]
+    )
+    predictive_power_upper = np.asarray(
+        [row["predicted_dynamic_power_predictive_upper_95_w"] for row in window_rows]
+    )
     window_seconds = np.asarray(
         [row["duration_ns"] / NS_PER_SECOND for row in window_rows]
     )
@@ -455,6 +548,10 @@ def build_plot_series(window_rows):
         "predicted_power": predicted_power,
         "predicted_power_lower": predicted_power_lower,
         "predicted_power_upper": predicted_power_upper,
+        "predictive_power_lower": predictive_power_lower,
+        "predictive_power_upper": predictive_power_upper,
+        "predictive_energy_lower": predictive_power_lower * window_seconds,
+        "predictive_energy_upper": predictive_power_upper * window_seconds,
         "measured_energy": measured_energy,
         "predicted_energy": predicted_energy,
         "predicted_energy_lower": predicted_energy_lower,
@@ -493,9 +590,14 @@ def plot_kernel_power_fit(plt, output_dir, window_rows):
             label="Posterior mean", linewidth=1.1,
         )
         axis.fill_between(
+            series["elapsed_seconds"], series["predictive_power_lower"],
+            series["predictive_power_upper"], alpha=0.12, color="tab:orange",
+            linewidth=0, label="95% predictive interval",
+        )
+        axis.fill_between(
             series["elapsed_seconds"], series["predicted_power_lower"],
-            series["predicted_power_upper"], alpha=0.2,
-            label="95% credible interval",
+            series["predicted_power_upper"], alpha=0.3, color="tab:orange",
+            linewidth=0, label="95% credible interval",
         )
         test_start = series["test_start"]
         if test_start < len(series["elapsed_seconds"]):
@@ -519,8 +621,8 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
     test_start = series["test_start"]
     actual = series["measured_energy"][test_start:]
     expected = series["predicted_energy"][test_start:]
-    lower = series["predicted_energy_lower"][test_start:]
-    upper = series["predicted_energy_upper"][test_start:]
+    lower = series["predictive_energy_lower"][test_start:]
+    upper = series["predictive_energy_upper"][test_start:]
     if not len(actual):
         raise ValueError("Temporal holdout contains no windows to plot")
 
@@ -567,7 +669,10 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
         label="Central line: predicted = measured",
     )
     fit_axis.set_ylabel("Posterior predicted energy (J/window)")
-    fit_axis.set_title("Kernel-energy temporal holdout predictions")
+    fit_axis.set_title(
+        "Kernel-energy temporal holdout predictions "
+        "(vertical bars: 95% predictive interval)"
+    )
     fit_axis.grid(alpha=0.2)
     fit_axis.legend()
     residual_axis.axhline(
@@ -583,13 +688,14 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
     plt.close(figure)
 
 
-def session_holdout_energy(window_rows, prediction_draws):
+def session_holdout_energy(window_rows, predictions):
     """Per-session totals over holdout windows: measured vs predicted energy.
 
-    The predicted interval sums each posterior draw over the session's windows
-    before taking quantiles, so it is the credible interval of the total and
-    not a sum of per-window bounds. Power ranges skip truncated windows
-    (shorter than half the session's longest) whose power is noisy.
+    Intervals sum each posterior draw over the session's windows before taking
+    quantiles, so they describe the total rather than adding per-window
+    bounds. The predictive total treats window noise as independent; NVML
+    samples are autocorrelated, so it can still be too narrow. Power ranges
+    skip truncated windows (shorter than half the session's longest).
     """
     indices_by_session = {}
     for index, row in enumerate(window_rows):
@@ -606,9 +712,12 @@ def session_holdout_energy(window_rows, prediction_draws):
         measured_j = np.asarray(
             [window_rows[index]["dynamic_energy_mj"] for index in indices]
         ) / 1000.0
-        window_draws = prediction_draws[:, indices]
+        window_draws = predictions["prediction_draws"][:, indices]
         total_draws = window_draws @ seconds
         lower, upper = np.quantile(total_draws, [0.025, 0.975])
+        predictive_lower, predictive_upper = np.quantile(
+            predictions["predictive_draws"][:, indices] @ seconds, [0.025, 0.975]
+        )
         measured_power = measured_j / seconds
         predicted_power = window_draws.mean(axis=0)
         full = seconds >= 0.5 * seconds.max()
@@ -623,6 +732,8 @@ def session_holdout_energy(window_rows, prediction_draws):
                 "predicted_energy_mean_j": predicted_total,
                 "predicted_energy_lower_95_j": float(lower),
                 "predicted_energy_upper_95_j": float(upper),
+                "predicted_energy_predictive_lower_95_j": float(predictive_lower),
+                "predicted_energy_predictive_upper_95_j": float(predictive_upper),
                 "energy_error_pct": (
                     100.0 * (predicted_total - measured_total) / measured_total
                     if measured_total > 0.0
@@ -644,12 +755,18 @@ def session_holdout_energy(window_rows, prediction_draws):
         for row in session_rows
         if row["energy_error_pct"] is not None
     ]
-    covered = [
-        row["predicted_energy_lower_95_j"]
-        <= row["measured_energy_j"]
-        <= row["predicted_energy_upper_95_j"]
-        for row in session_rows
-    ]
+    def coverage(prefix):
+        return float(
+            np.mean(
+                [
+                    row[f"{prefix}lower_95_j"]
+                    <= row["measured_energy_j"]
+                    <= row[f"{prefix}upper_95_j"]
+                    for row in session_rows
+                ]
+            )
+        )
+
     total_variation = float(np.sum((measured - measured.mean()) ** 2))
     session_metrics = {
         "sessions": len(session_rows),
@@ -665,7 +782,8 @@ def session_holdout_energy(window_rows, prediction_draws):
         "total_energy_error_pct": (
             100.0 * float(predicted.sum() - measured.sum()) / float(measured.sum())
         ),
-        "credible_interval_95_coverage": float(np.mean(covered)),
+        "credible_interval_95_coverage": coverage("predicted_energy_"),
+        "predictive_interval_95_coverage": coverage("predicted_energy_predictive_"),
     }
     return session_rows, session_metrics
 
@@ -698,6 +816,12 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
     predicted = np.asarray([row["predicted_energy_mean_j"] for row in rows])
     lower = np.asarray([row["predicted_energy_lower_95_j"] for row in rows])
     upper = np.asarray([row["predicted_energy_upper_95_j"] for row in rows])
+    predictive_lower = np.asarray(
+        [row["predicted_energy_predictive_lower_95_j"] for row in rows]
+    )
+    predictive_upper = np.asarray(
+        [row["predicted_energy_predictive_upper_95_j"] for row in rows]
+    )
 
     figure, (energy_axis, power_axis) = plt.subplots(
         1, 2, figsize=(15, max(6.0, 0.5 * len(rows) + 3.0)),
@@ -705,7 +829,9 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
     )
 
     limit_low = 0.0
-    limit_high = 1.05 * float(max(measured.max(), upper.max()))
+    limit_high = 1.05 * float(
+        max(measured.max(), upper.max(), predictive_upper.max())
+    )
     energy_axis.plot(
         [limit_low, limit_high], [limit_low, limit_high],
         color=REFERENCE_COLOR, linestyle="--", linewidth=1.2,
@@ -713,9 +839,15 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
     )
     energy_axis.errorbar(
         measured, predicted,
+        yerr=np.vstack([predicted - predictive_lower, predictive_upper - predicted]),
+        fmt="none", ecolor=PREDICTED_COLOR, alpha=0.45,
+        capsize=4, elinewidth=1.0, label="95% predictive interval",
+    )
+    energy_axis.errorbar(
+        measured, predicted,
         yerr=np.vstack([predicted - lower, upper - predicted]),
         fmt="o", color=PREDICTED_COLOR, ecolor=PREDICTED_COLOR,
-        markersize=7, capsize=3, linewidth=1.4, elinewidth=1.4,
+        markersize=7, capsize=0, elinewidth=3.0,
         markeredgecolor="white", markeredgewidth=1.0,
         label="Posterior mean ± 95% credible interval",
     )
@@ -751,11 +883,21 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
                 + format_optional(
                     session_metrics["total_energy_error_pct"], "{:+.1f}%"
                 ),
-                "  95% interval coverage = "
-                + f"{100.0 * session_metrics['credible_interval_95_coverage']:.0f}%",
+                "  95% coverage: credible "
+                + f"{100.0 * session_metrics['credible_interval_95_coverage']:.0f}%"
+                + ", predictive "
+                + f"{100.0 * session_metrics['predictive_interval_95_coverage']:.0f}%",
                 "Per window (power):",
                 "  R² = " + format_optional(test_metrics["r_squared"], "{:.4f}"),
                 f"  RMSE = {test_metrics['rmse_w']:.3f} W",
+                "  95% coverage: credible "
+                + format_optional(
+                    test_metrics["credible_interval_95_coverage"], "{:.0%}"
+                )
+                + ", predictive "
+                + format_optional(
+                    test_metrics["predictive_interval_95_coverage"], "{:.0%}"
+                ),
             ]
         ),
         transform=energy_axis.transAxes, va="top", fontsize=9,
@@ -814,6 +956,7 @@ def create_plots(
     ):
         (output_dir / obsolete_name).unlink(missing_ok=True)
 
+    window_rows = [row for row in window_rows if row["split"] != "excluded"]
     plot_kernel_family_energy(plt, output_dir, family_rows)
     series = build_plot_series(window_rows)
     plot_kernel_power_fit(plt, output_dir, window_rows)
@@ -822,6 +965,19 @@ def create_plots(
         plot_session_energy(
             plt, output_dir, session_rows, session_metrics, test_metrics
         )
+
+
+def print_coverage(test_metrics, session_metrics):
+    print(
+        "Test 95% coverage per window: "
+        f"credible {format_optional(test_metrics['credible_interval_95_coverage'], '{:.1%}')}, "
+        f"predictive {format_optional(test_metrics['predictive_interval_95_coverage'], '{:.1%}')}"
+    )
+    print(
+        "Test 95% coverage of session energy: "
+        f"credible {session_metrics['credible_interval_95_coverage']:.1%}, "
+        f"predictive {session_metrics['predictive_interval_95_coverage']:.1%}"
+    )
 
 
 def validate_common_args(args):
@@ -835,16 +991,57 @@ def validate_common_args(args):
         raise ValueError("Invalid MCMC settings")
     if args.min_windows_per_parameter <= 0.0:
         raise ValueError("--min-windows-per-parameter must be greater than zero")
+    if not 0.0 <= args.min_window_fraction <= 1.0:
+        raise ValueError("--min-window-fraction must be in [0, 1]")
 
 
-def split_point(window_count, train_fraction):
-    if window_count < 7:
+def split_point(window_count, train_fraction, strict=True):
+    if strict and window_count < 7:
         raise ValueError(
-            f"Only {window_count} windows overlap kernels and telemetry; at "
-            "least 7 are required for a temporal holdout"
+            f"Only {window_count} complete windows overlap kernels and "
+            "telemetry; at least 7 are required for a temporal holdout"
         )
     train_count = int(window_count * train_fraction)
     return min(max(train_count, 5), window_count - 2)
+
+
+def window_durations_ns(window_rows):
+    return np.asarray([row["duration_ns"] for row in window_rows], dtype=np.float64)
+
+
+def activity_design(activity_ns, window_rows):
+    """Intercept plus each family's busy fraction of the window's real length."""
+    fraction = activity_ns / window_durations_ns(window_rows)[:, None]
+    return np.column_stack([np.ones(len(fraction)), fraction])
+
+
+def assign_splits(
+    window_rows, train_fraction, window_ns, min_window_fraction, strict=True
+):
+    """Label windows train/test/excluded and return the training count.
+
+    Windows shorter than ``min_window_fraction * window_ns`` are "excluded":
+    their mean power is unreliable, so they are left out of fitting and
+    evaluation. Only a session's final window can be short, so training is
+    still the chronological prefix ``[:train_count]``.
+    """
+    complete = [
+        row["duration_ns"] >= min_window_fraction * window_ns
+        for row in window_rows
+    ]
+    train_count = split_point(sum(complete), train_fraction, strict)
+    if not all(complete[:train_count]):
+        raise ValueError("A truncated window falls inside the training prefix")
+    for index, row in enumerate(window_rows):
+        if index < train_count:
+            row["split"] = "train"
+        else:
+            row["split"] = "test" if complete[index] else "excluded"
+    return train_count
+
+
+def split_mask(window_rows, *splits):
+    return np.asarray([row["split"] in splits for row in window_rows])
 
 
 def coefficient_summary_rows(terms, coefficient_draws, column_scale):
@@ -902,12 +1099,14 @@ def main():
         window_ns,
         args.idle_power_mw,
     )
-    activity_fraction = activity_ns / window_ns
-    design = np.column_stack([np.ones(len(activity_fraction)), activity_fraction])
-    train_count = split_point(len(window_rows), args.train_fraction)
+    train_count = assign_splits(
+        window_rows, args.train_fraction, window_ns, args.min_window_fraction
+    )
+    design = activity_design(activity_ns, window_rows)
+    test_mask = split_mask(window_rows, "test")
     terms = ["unattributed_baseline"] + families
     identifiability = check_identifiability(
-        design, train_count, terms,
+        design[split_mask(window_rows, "train", "test")], train_count, terms,
         args.min_windows_per_parameter, args.allow_underdetermined,
     )
     print(
@@ -926,28 +1125,17 @@ def main():
             args.seed,
         )
     )
-    predicted_mean = prediction_draws.mean(axis=0)
-    predicted_lower, predicted_upper = np.quantile(
-        prediction_draws, [0.025, 0.975], axis=0
-    )
+    predictions = summarize_predictions(prediction_draws, noise_draws, args.seed + 10)
     allocation = posterior_energy_allocation(
         coefficient_draws,
         activity_ns,
         attribution_pool_mj(window_rows, args.attribution),
-        window_ns,
+        window_durations_ns(window_rows),
         args.attribution,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    for index, row in enumerate(window_rows):
-        row.update(
-            {
-                "split": "train" if index < train_count else "test",
-                "predicted_dynamic_power_mean_w": predicted_mean[index],
-                "predicted_dynamic_power_lower_95_w": predicted_lower[index],
-                "predicted_dynamic_power_upper_95_w": predicted_upper[index],
-            }
-        )
+    add_prediction_columns(window_rows, predictions)
     apply_allocation_to_rows(window_rows, allocation)
     write_csv(
         args.output_dir / "bayesian_energy_windows.csv",
@@ -994,15 +1182,11 @@ def main():
         list(family_rows[0]),
     )
 
-    train_metrics = regression_metrics(
-        target_power_w[:train_count], predicted_mean[:train_count]
+    train_metrics = prediction_metrics(
+        target_power_w, predictions, split_mask(window_rows, "train")
     )
-    test_metrics = regression_metrics(
-        target_power_w[train_count:], predicted_mean[train_count:]
-    )
-    session_rows, session_metrics = session_holdout_energy(
-        window_rows, prediction_draws
-    )
+    test_metrics = prediction_metrics(target_power_w, predictions, test_mask)
+    session_rows, session_metrics = session_holdout_energy(window_rows, predictions)
     write_csv(
         args.output_dir / "bayesian_session_energy.csv",
         session_rows,
@@ -1057,7 +1241,9 @@ def main():
         "idle_power_mw": args.idle_power_mw,
         "windows": len(window_rows),
         "train_windows": train_count,
-        "test_windows": len(window_rows) - train_count,
+        "test_windows": int(test_mask.sum()),
+        "excluded_short_windows": int(split_mask(window_rows, "excluded").sum()),
+        "min_window_fraction": args.min_window_fraction,
         "kernel_events": event_count,
         "kernel_families": len(families),
         "design_matrix_rank": identifiability["design_matrix_rank"],
@@ -1083,6 +1269,7 @@ def main():
     print(f"Test power RMSE: {test_metrics['rmse_w']:.3f} W")
     if test_metrics["r_squared"] is not None:
         print(f"Test power R-squared: {test_metrics['r_squared']:.4f}")
+    print_coverage(test_metrics, session_metrics)
     print(f"Measured dynamic energy: {accounting['measured_dynamic_energy_mj']:.3f} mJ")
     print(
         "Bayesian attributed energy: "

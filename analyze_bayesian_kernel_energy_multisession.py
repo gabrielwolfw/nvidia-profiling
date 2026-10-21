@@ -9,19 +9,26 @@ from pathlib import Path
 import numpy as np
 
 from analyze_bayesian_kernel_energy import (
+    activity_design,
     add_model_check_arguments,
     apply_allocation_to_rows,
+    assign_splits,
     attribution_pool_mj,
     coefficient_summary_rows,
     create_plots,
     energy_accounting,
+    add_prediction_columns,
     fit_nonnegative_bayesian_regression,
     posterior_energy_allocation,
-    regression_metrics,
+    prediction_metrics,
+    print_coverage,
+    summarize_predictions,
     scan_kernel_families,
     session_holdout_energy,
     short_kernel_name,
+    split_mask,
     validate_common_args,
+    window_durations_ns,
 )
 from energy_attribution.diagnostics import (
     check_identifiability,
@@ -154,18 +161,16 @@ def build_session_windows(
 
 def aggregate_session(
     name, telemetry_path, metadata, selected, family_index,
-    window_ns, idle_power_mw, train_fraction,
+    window_ns, idle_power_mw, train_fraction, min_window_fraction,
 ):
     result = build_session_windows(
         name, telemetry_path, metadata, selected, family_index,
         window_ns, idle_power_mw,
     )
     rows = result["rows"]
-    split = int(len(rows) * train_fraction)
-    split = min(max(split, 5), len(rows) - 2)
-    for index, row in enumerate(rows):
-        row["split"] = "train" if index < split else "test"
-    result["split"] = split
+    result["split"] = assign_splits(
+        rows, train_fraction, window_ns, min_window_fraction, strict=False
+    )
     return result
 
 
@@ -229,18 +234,18 @@ def main():
         aggregate_session(
             name, telemetry, metadata, scan["selected"], family_index,
             window_ns, args.idle_power_mw, args.train_fraction,
+            args.min_window_fraction,
         )
         for name, telemetry, _, metadata in scan["sessions"]
     ]
     rows, activity_ns, target_power_w, train_count = combine_train_test(
         session_data
     )
-    design = np.column_stack(
-        [np.ones(len(activity_ns)), activity_ns / window_ns]
-    )
+    design = activity_design(activity_ns, rows)
+    test_mask = split_mask(rows, "test")
     terms = ["unattributed_baseline"] + families
     identifiability = check_identifiability(
-        design, train_count, terms,
+        design[split_mask(rows, "train", "test")], train_count, terms,
         args.min_windows_per_parameter, args.allow_underdetermined,
     )
     print(
@@ -254,25 +259,15 @@ def main():
             args.thin, args.seed,
         )
     )
-    predicted_mean = prediction_draws.mean(axis=0)
-    predicted_lower, predicted_upper = np.quantile(
-        prediction_draws, [0.025, 0.975], axis=0
-    )
+    predictions = summarize_predictions(prediction_draws, noise_draws, args.seed + 10)
     allocation = posterior_energy_allocation(
         coefficient_draws,
         activity_ns,
         attribution_pool_mj(rows, args.attribution),
-        window_ns,
+        window_durations_ns(rows),
         args.attribution,
     )
-    for index, row in enumerate(rows):
-        row.update(
-            {
-                "predicted_dynamic_power_mean_w": predicted_mean[index],
-                "predicted_dynamic_power_lower_95_w": predicted_lower[index],
-                "predicted_dynamic_power_upper_95_w": predicted_upper[index],
-            }
-        )
+    add_prediction_columns(rows, predictions)
     apply_allocation_to_rows(rows, allocation)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -293,15 +288,11 @@ def main():
         args.output_dir / "bayesian_kernel_family_energy.csv",
         family_rows, list(family_rows[0]),
     )
-    train_metrics = regression_metrics(
-        target_power_w[:train_count], predicted_mean[:train_count]
+    train_metrics = prediction_metrics(
+        target_power_w, predictions, split_mask(rows, "train")
     )
-    test_metrics = regression_metrics(
-        target_power_w[train_count:], predicted_mean[train_count:]
-    )
-    session_rows, session_metrics = session_holdout_energy(
-        rows, prediction_draws
-    )
+    test_metrics = prediction_metrics(target_power_w, predictions, test_mask)
+    session_rows, session_metrics = session_holdout_energy(rows, predictions)
     write_csv(
         args.output_dir / "bayesian_session_energy.csv",
         session_rows, list(session_rows[0]),
@@ -322,7 +313,9 @@ def main():
         "excluded_sessions": scan["excluded_sessions"],
         "window_ms": args.window_ms,
         "train_windows": train_count,
-        "test_windows": len(rows) - train_count,
+        "test_windows": int(test_mask.sum()),
+        "excluded_short_windows": int(split_mask(rows, "excluded").sum()),
+        "min_window_fraction": args.min_window_fraction,
         "kernel_events": int(sum(scan["event_count_by_name"].values())),
         "kernel_families": len(families),
         "design_matrix_rank": identifiability["design_matrix_rank"],
@@ -352,6 +345,7 @@ def main():
     print(f"Test power RMSE: {test_metrics['rmse_w']:.3f} W")
     if test_metrics["r_squared"] is not None:
         print(f"Test power R-squared: {test_metrics['r_squared']:.4f}")
+    print_coverage(test_metrics, session_metrics)
     print(f"Baseline (b0) energy: {accounting['baseline_posterior_mean_mj']:.3f} mJ")
     print(f"Conservation error: {accounting['conservation_error_mj']:.6g} mJ")
     print_identifiability_warnings(identifiability, short_kernel_name)

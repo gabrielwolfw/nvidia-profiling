@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from analyze_bayesian_kernel_energy import (
+    activity_design,
     add_model_check_arguments,
     attribution_pool_mj,
     energy_accounting,
@@ -17,7 +18,9 @@ from analyze_bayesian_kernel_energy import (
     regression_metrics,
     scan_kernel_families,
     short_kernel_name,
+    split_mask,
     validate_common_args,
+    window_durations_ns,
 )
 from analyze_bayesian_kernel_energy_multisession import (
     build_session_windows,
@@ -367,6 +370,13 @@ def main():
     train_rows, train_activity, train_target = combine_training_sessions(
         training_sessions
     )
+    # Drop truncated final windows of each training session from the fit.
+    minimum_ns = args.min_window_fraction * window_ns
+    complete = window_durations_ns(train_rows) >= minimum_ns
+    excluded_training_windows = int((~complete).sum())
+    train_rows = [row for row, keep in zip(train_rows, complete) if keep]
+    train_activity = train_activity[complete]
+    train_target = train_target[complete]
 
     test_telemetry, test_kernels = require_session_files(
         args.external_test_session
@@ -384,14 +394,16 @@ def main():
     test_rows = external["rows"]
     test_activity = external["activity_ns"]
     test_target = external["target_power_w"]
-    calibration_count = int(len(test_rows) * args.calibration_fraction)
-    calibration_count = min(max(calibration_count, 5), len(test_rows) - 2)
+    test_complete = window_durations_ns(test_rows) >= minimum_ns
+    complete_count = int(test_complete.sum())
+    calibration_count = int(complete_count * args.calibration_fraction)
+    calibration_count = min(max(calibration_count, 5), complete_count - 2)
+    if not test_complete[:calibration_count].all():
+        raise ValueError("A truncated window falls inside the calibration prefix")
 
     all_activity = np.vstack([train_activity, test_activity])
     all_target = np.concatenate([train_target, test_target])
-    all_design = np.column_stack(
-        [np.ones(len(all_activity)), all_activity / window_ns]
-    )
+    all_design = activity_design(all_activity, train_rows + test_rows)
     train_count = len(train_rows)
     identifiability = check_identifiability(
         all_design, train_count, ["unattributed_baseline"] + families,
@@ -458,7 +470,7 @@ def main():
         calibrated_family_draws,
         test_activity,
         attribution_pool_mj(test_rows, args.attribution),
-        window_ns,
+        window_durations_ns(test_rows),
         args.attribution,
     )
     family_total_draws = allocation["family_total_draws"]
@@ -475,7 +487,10 @@ def main():
         allocation,
     )
 
-    evaluation = slice(calibration_count, None)
+    for row, keep in zip(test_rows, test_complete):
+        if not keep:
+            row["split"] = "excluded"
+    evaluation = split_mask(test_rows, "test")
     metrics = {
         "zero_shot": regression_metrics(
             test_target[evaluation], zero_mean[evaluation]
@@ -553,7 +568,12 @@ def main():
         "calibration_fraction": args.calibration_fraction,
         "training_windows": train_count,
         "v100_calibration_windows": calibration_count,
-        "v100_evaluation_windows": len(test_rows) - calibration_count,
+        "v100_evaluation_windows": int(evaluation.sum()),
+        "excluded_short_windows": {
+            "training": excluded_training_windows,
+            "v100": int((~test_complete).sum()),
+        },
+        "min_window_fraction": args.min_window_fraction,
         "kernel_families": len(families),
         "training_design_rank": identifiability["design_matrix_rank"],
         "training_design_parameters": int(all_design.shape[1]),
@@ -601,13 +621,17 @@ def main():
 
     if args.plot:
         create_plots(
-            args.output_dir, test_rows, calibration_count, family_rows, metrics
+            args.output_dir,
+            [row for row in test_rows if row["split"] != "excluded"],
+            calibration_count,
+            family_rows,
+            metrics,
         )
 
     print("\n=== Thor to V100 Bayesian kernel-energy transfer ===")
     print(f"Thor training windows: {train_count}")
     print(f"V100 calibration windows: {calibration_count}")
-    print(f"V100 evaluation windows: {len(test_rows) - calibration_count}")
+    print(f"V100 evaluation windows: {int(evaluation.sum())}")
     print(
         "V100 explicit-family duration coverage: "
         f"{100.0 * summary['v100_explicit_family_duration_coverage']:.2f}%"

@@ -21,6 +21,7 @@ constexpr auto kSamplerReadyTimeout = std::chrono::seconds(10);
 constexpr auto kSamplerInterruptTimeout = std::chrono::seconds(5);
 constexpr auto kSamplerTerminateTimeout = std::chrono::seconds(2);
 constexpr auto kSamplerKillTimeout = std::chrono::seconds(2);
+constexpr uint64_t kSamplerSamplingInterval = 1'000'000;
 std::mutex sampler_fork_mutex;
 
 bool ProcessExists(pid_t pid) {
@@ -306,6 +307,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
 
   const std::string device = std::to_string(device_);
   const std::string duration = std::to_string(max_duration_.count());
+  const std::string sampling_interval =
+      std::to_string(kSamplerSamplingInterval);
   const std::string samples_path =
       "/proc/self/fd/" + std::to_string(inherited_samples_fd);
   const char* sampler_path = sampler_path_.c_str();
@@ -330,8 +333,9 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
     close(output_directory_fd);
 
     execl(sampler_path, sampler_path, "--device", device.c_str(), "--duration",
-          duration.c_str(), "--maxsamples", "100000", "--output",
-          samples_path.c_str(), static_cast<char*>(nullptr));
+          duration.c_str(), "--samplingInterval", sampling_interval.c_str(),
+          "--maxsamples", "100000", "--output", samples_path.c_str(),
+          static_cast<char*>(nullptr));
     _exit(127);
   }
   close(inherited_samples_fd);

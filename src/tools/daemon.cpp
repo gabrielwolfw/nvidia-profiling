@@ -1,6 +1,9 @@
-#include "gpu/ipc.hpp"
-#include "gpu/session.hpp"
-#include "nvidia-process-metrics-config.hpp"
+/**
+ * @file daemon.cpp
+ * @brief Daemon that runs GPU profiling sessions requested over IPC
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
 
 #include <fcntl.h>
 #include <poll.h>
@@ -13,7 +16,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstring>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -21,6 +24,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "gpu/ipc.hpp"                        // NOLINT
+#include "gpu/session.hpp"                    // NOLINT
+#include "nvidia-process-metrics-config.hpp"  // NOLINT
 
 namespace {
 
@@ -51,7 +58,7 @@ void RequestShutdown(int) {
 
 void InstallSignalHandlers(int notification_fd) {
   shutdown_notification_fd = notification_fd;
-  struct sigaction action {};
+  struct sigaction action{};
   action.sa_handler = RequestShutdown;
   sigemptyset(&action.sa_mask);
   if (sigaction(SIGINT, &action, nullptr) != 0 ||
@@ -64,8 +71,7 @@ void InstallSignalHandlers(int notification_fd) {
 struct DaemonOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
   std::filesystem::path results_root = "/tmp/nvidia-process-metrics";
-  std::filesystem::path sampler_path =
-      NVIDIA_PROCESS_METRICS_SAMPLER_PATH;
+  std::filesystem::path sampler_path = NVIDIA_PROCESS_METRICS_SAMPLER_PATH;
 };
 
 DaemonOptions ParseArgs(int argc, char** argv) {
@@ -210,8 +216,8 @@ std::string HandleRequest(NvidiaProcessMetricsSessionManager& manager,
       if (!manager.Get(fields[1], uid, &state, &reason, &output_dir, &error)) {
         return Error(error);
       }
-      return "OK " + std::string(SessionStateName(state)) + " " + reason +
-             " " + output_dir.string();
+      return "OK " + std::string(SessionStateName(state)) + " " + reason + " " +
+             output_dir.string();
     }
   } catch (const std::exception& exception) {
     return Error(std::string("invalid_request_") + exception.what());
@@ -256,7 +262,7 @@ int main(int argc, char** argv) {
     InstallSignalHandlers(shutdown_pipe[1]);
     const int listener = CreateListener(options.socket_path);
     NvidiaProcessMetricsSessionManager manager(options.results_root,
-                                                options.sampler_path);
+                                               options.sampler_path);
     std::cout << "NVIDIA Process Metrics daemon listening on "
               << options.socket_path << '\n';
     while (!shutdown_requested) {
@@ -314,7 +320,8 @@ int main(int argc, char** argv) {
       } catch (const std::exception& exception) {
         ReleaseClientSlot();
         close(client);
-        std::cerr << "cannot create client thread: " << exception.what() << '\n';
+        std::cerr << "cannot create client thread: " << exception.what()
+                  << '\n';
       }
     }
     shutdown_notification_fd = -1;

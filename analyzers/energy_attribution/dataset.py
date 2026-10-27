@@ -1,4 +1,4 @@
-"""Window datasets: train/test/excluded splits and the activity design matrix."""
+"""Window datasets: train/test/excluded splits and the design matrix."""
 
 from dataclasses import dataclass
 from functools import cached_property
@@ -17,11 +17,13 @@ def split_point(window_count, train_fraction, strict=True):
 
 
 def window_durations_ns(window_rows):
-    return np.asarray([row["duration_ns"] for row in window_rows], dtype=np.float64)
+    return np.asarray(
+        [row["duration_ns"] for row in window_rows], dtype=np.float64
+    )
 
 
 def activity_design(activity_ns, window_rows):
-    """Intercept plus each family's busy fraction of the window's real length."""
+    """Intercept plus each family's busy fraction of the window length."""
     fraction = activity_ns / window_durations_ns(window_rows)[:, None]
     return np.column_stack([np.ones(len(fraction)), fraction])
 
@@ -53,7 +55,6 @@ def assign_splits(
 
 def split_mask(window_rows, *splits):
     return np.asarray([row["split"] in splits for row in window_rows])
-
 
 
 @dataclass

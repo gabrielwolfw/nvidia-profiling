@@ -1,4 +1,4 @@
-"""Check vectorized window aggregation against straightforward loop references."""
+"""Check vectorized window aggregation against loop references."""
 
 import csv
 import sys
@@ -26,12 +26,15 @@ def reference_activity(starts, ends, columns, family_count, lo, hi, window_ns):
     activity = np.zeros((count, family_count))
     union = np.zeros(count)
     union_end = np.full(count, -1, dtype=np.int64)
-    for start, end, column in zip(starts.tolist(), ends.tolist(), columns.tolist()):
+    for start, end, column in zip(
+        starts.tolist(), ends.tolist(), columns.tolist()
+    ):
         clipped_start, clipped_end = max(start, lo), min(end, hi)
         if clipped_end <= clipped_start:
             continue
         for window in range(
-            (clipped_start - lo) // window_ns, (clipped_end - 1 - lo) // window_ns + 1
+            (clipped_start - lo) // window_ns,
+            (clipped_end - 1 - lo) // window_ns + 1,
         ):
             window_start = lo + window * window_ns
             window_end = min(window_start + window_ns, hi)
@@ -39,7 +42,9 @@ def reference_activity(starts, ends, columns, family_count, lo, hi, window_ns):
             overlap_end = min(clipped_end, window_end)
             activity[window, column] += overlap_end - overlap_start
             if overlap_end > union_end[window]:
-                union[window] += overlap_end - max(overlap_start, union_end[window])
+                union[window] += overlap_end - max(
+                    overlap_start, union_end[window]
+                )
                 union_end[window] = overlap_end
     return activity, union
 
@@ -54,7 +59,9 @@ def reference_integral(timestamps, power, start, end, idle):
             continue
         values = []
         for timestamp in (overlap_start, overlap_end):
-            value = left_p + (timestamp - left_t) / (right_t - left_t) * (right_p - left_p)
+            value = left_p + (timestamp - left_t) / (right_t - left_t) * (
+                right_p - left_p
+            )
             values.append((value, max(0.0, value - idle)))
         seconds = (overlap_end - overlap_start) / 1e9
         device += 0.5 * (values[0][0] + values[1][0]) * seconds
@@ -63,6 +70,7 @@ def reference_integral(timestamps, power, start, end, idle):
 
 
 class FakeTable:
+
     def __init__(self, starts, ends):
         self.start_ns = starts
         self.end_ns = ends
@@ -83,6 +91,8 @@ def random_events(rng, count, horizon):
 
 
 class AggregationTests(unittest.TestCase):
+    """Vectorized aggregation matches the loop reference."""
+
     def test_matches_reference_across_chunks(self):
         rng = np.random.default_rng(7)
         starts, ends = random_events(rng, 3_000, 1_000_000)
@@ -120,14 +130,20 @@ class AggregationTests(unittest.TestCase):
 
     def test_window_integration_matches_full_scan(self):
         rng = np.random.default_rng(3)
-        timestamps = np.cumsum(rng.integers(5_000, 60_000, 200)).astype(np.int64)
+        timestamps = np.cumsum(rng.integers(5_000, 60_000, 200)).astype(
+            np.int64
+        )
         power = rng.uniform(20_000.0, 250_000.0, len(timestamps))
         trace = PowerTrace(timestamps, power)
         starts, ends = windows.window_bounds(
             int(timestamps[3]) + 17, int(timestamps[-5]) - 3, 41_000
         )
-        device, dynamic = windows.integrate_windows(trace, starts, ends, 60_000.0)
-        for index, (start, end) in enumerate(zip(starts.tolist(), ends.tolist())):
+        device, dynamic = windows.integrate_windows(
+            trace, starts, ends, 60_000.0
+        )
+        for index, (start, end) in enumerate(
+            zip(starts.tolist(), ends.tolist())
+        ):
             expected = reference_integral(
                 timestamps.tolist(), power.tolist(), start, end, 60_000.0
             )
@@ -135,6 +151,8 @@ class AggregationTests(unittest.TestCase):
 
 
 class LoaderTests(unittest.TestCase):
+    """Kernel CSV loading and row validation."""
+
     def test_invalid_rows_are_skipped_and_ties_keep_first_appearance(self):
         rows = [
             ["event_id", "start_ns", "end_ns", "kernel_name"],
@@ -154,13 +172,19 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(table.event_ids.tolist(), [0, 4, 5])
         self.assertEqual(table.names, ["b", "a,with,commas", "a"])
         durations, counts = table.name_statistics()
-        self.assertEqual([name for name, _ in durations.most_common()], table.names)
+        self.assertEqual(
+            [name for name, _ in durations.most_common()], table.names
+        )
         self.assertEqual(counts["a"], 1)
 
 
 class IdentifiabilityTests(unittest.TestCase):
+    """Identifiability checks on the design matrix."""
+
     def test_underdetermined_design_is_rejected(self):
-        design = np.column_stack([np.ones(10), np.arange(10.0), np.arange(10.0) ** 2])
+        design = np.column_stack(
+            [np.ones(10), np.arange(10.0), np.arange(10.0) ** 2]
+        )
         with self.assertRaises(ValueError):
             check_identifiability(design, 8, ["b0", "f1", "f2"])
         report = check_identifiability(

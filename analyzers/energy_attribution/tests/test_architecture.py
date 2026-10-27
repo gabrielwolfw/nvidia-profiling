@@ -49,6 +49,8 @@ def package_imports(path):
 
 
 class CommandLineParityTests(unittest.TestCase):
+    """Command-line parsing matches the configuration dataclasses."""
+
     def test_parsed_defaults_equal_dataclass_defaults(self):
         for config_type in CONFIG_TYPES:
             with self.subTest(config=config_type.__name__):
@@ -72,13 +74,17 @@ class CommandLineParityTests(unittest.TestCase):
 
 
 class LayeringTests(unittest.TestCase):
+    """Core modules do not depend on upper layers."""
+
     def test_core_modules_do_not_import_upper_layers(self):
         for path in PACKAGE.glob("*.py"):
             if path.stem in UPPER_LAYERS or path.stem == "__init__":
                 continue
             for module in package_imports(path):
                 with self.subTest(module=path.stem, imports=module):
-                    layer = module.removeprefix("energy_attribution.").split(".")[0]
+                    layer = module.removeprefix("energy_attribution.").split(
+                        "."
+                    )[0]
                     self.assertNotIn(layer, UPPER_LAYERS)
 
     def test_package_never_imports_repository_scripts(self):
@@ -94,6 +100,8 @@ class LayeringTests(unittest.TestCase):
 
 
 class AllocationTests(unittest.TestCase):
+    """Energy allocation conserves window energy."""
+
     def test_family_and_baseline_shares_conserve_window_energy(self):
         rng = np.random.default_rng(5)
         draws = rng.uniform(0.0, 50.0, size=(200, 4))

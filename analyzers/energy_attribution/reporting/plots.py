@@ -4,6 +4,10 @@ Matplotlib is imported lazily inside ``create_plots`` and
 ``create_transfer_plots`` so the analyses run without it unless ``--plot``.
 """
 
+# Subscripts inside f-strings need single quotes before Python 3.12.
+# pylint: disable=inconsistent-quotes
+
+
 import numpy as np
 
 from energy_attribution.units import NS_PER_SECOND
@@ -74,10 +78,16 @@ def build_plot_series(window_rows):
         [row["predicted_dynamic_power_upper_95_w"] for row in window_rows]
     )
     predictive_power_lower = np.asarray(
-        [row["predicted_dynamic_power_predictive_lower_95_w"] for row in window_rows]
+        [
+            row["predicted_dynamic_power_predictive_lower_95_w"]
+            for row in window_rows
+        ]
     )
     predictive_power_upper = np.asarray(
-        [row["predicted_dynamic_power_predictive_upper_95_w"] for row in window_rows]
+        [
+            row["predicted_dynamic_power_predictive_upper_95_w"]
+            for row in window_rows
+        ]
     )
     window_seconds = np.asarray(
         [row["duration_ns"] / NS_PER_SECOND for row in window_rows]
@@ -87,7 +97,11 @@ def build_plot_series(window_rows):
     predicted_energy_lower = predicted_power_lower * window_seconds
     predicted_energy_upper = predicted_power_upper * window_seconds
     test_start = next(
-        (index for index, row in enumerate(window_rows) if row["split"] == "test"),
+        (
+            index
+            for index, row in enumerate(window_rows)
+            if row["split"] == "test"
+        ),
         len(window_rows),
     )
     return {
@@ -109,13 +123,17 @@ def build_plot_series(window_rows):
 
 
 def session_row_groups(window_rows):
-    names = list(dict.fromkeys(row.get("session", "session") for row in window_rows))
+    names = list(
+        dict.fromkeys(row.get("session", "session") for row in window_rows)
+    )
     groups = []
     for name in names:
         rows = [
             row for row in window_rows if row.get("session", "session") == name
         ]
-        rows.sort(key=lambda row: row.get("session_window_index", row["window_index"]))
+        rows.sort(
+            key=lambda row: row.get("session_window_index", row["window_index"])
+        )
         groups.append((name, rows))
     return groups
 
@@ -123,39 +141,58 @@ def session_row_groups(window_rows):
 def plot_kernel_power_fit(plt, output_dir, window_rows):
     groups = session_row_groups(window_rows)
     figure, axes = plt.subplots(
-        len(groups), 1, figsize=(12, max(5, 2.3 * len(groups))),
-        squeeze=False, constrained_layout=True,
+        len(groups),
+        1,
+        figsize=(12, max(5, 2.3 * len(groups))),
+        squeeze=False,
+        constrained_layout=True,
     )
     for group_index, (name, rows) in enumerate(groups):
         axis = axes[group_index, 0]
         series = build_plot_series(rows)
         axis.plot(
-            series["elapsed_seconds"], series["measured_power"],
-            label="Measured NVML dynamic power", linewidth=1.1,
+            series["elapsed_seconds"],
+            series["measured_power"],
+            label="Measured NVML dynamic power",
+            linewidth=1.1,
         )
         axis.plot(
-            series["elapsed_seconds"], series["predicted_power"],
-            label="Posterior mean", linewidth=1.1,
+            series["elapsed_seconds"],
+            series["predicted_power"],
+            label="Posterior mean",
+            linewidth=1.1,
         )
         axis.fill_between(
-            series["elapsed_seconds"], series["predictive_power_lower"],
-            series["predictive_power_upper"], alpha=0.12, color="tab:orange",
-            linewidth=0, label="95% predictive interval",
+            series["elapsed_seconds"],
+            series["predictive_power_lower"],
+            series["predictive_power_upper"],
+            alpha=0.12,
+            color="tab:orange",
+            linewidth=0,
+            label="95% predictive interval",
         )
         axis.fill_between(
-            series["elapsed_seconds"], series["predicted_power_lower"],
-            series["predicted_power_upper"], alpha=0.3, color="tab:orange",
-            linewidth=0, label="95% credible interval",
+            series["elapsed_seconds"],
+            series["predicted_power_lower"],
+            series["predicted_power_upper"],
+            alpha=0.3,
+            color="tab:orange",
+            linewidth=0,
+            label="95% credible interval",
         )
         test_start = series["test_start"]
         if test_start < len(series["elapsed_seconds"]):
             axis.axvspan(
                 series["elapsed_seconds"][test_start],
-                series["elapsed_seconds"][-1], color="grey", alpha=0.12,
+                series["elapsed_seconds"][-1],
+                color="grey",
+                alpha=0.12,
                 label="Temporal holdout",
             )
         axis.set_ylabel("Power (W)")
-        axis.set_title(name if len(groups) > 1 else "Kernel-family Bayesian power fit")
+        axis.set_title(
+            name if len(groups) > 1 else "Kernel-family Bayesian power fit"
+        )
         axis.grid(alpha=0.25)
     axes[0, 0].legend(fontsize=8, ncol=4, loc="best")
     axes[-1, 0].set_xlabel("Elapsed time (s)")
@@ -171,7 +208,7 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
     expected = series["predicted_energy"][test_start:]
     lower = series["predictive_energy_lower"][test_start:]
     upper = series["predictive_energy_upper"][test_start:]
-    if not len(actual):
+    if len(actual) == 0:
         raise ValueError("Temporal holdout contains no windows to plot")
 
     figure, (fit_axis, residual_axis) = plt.subplots(
@@ -189,22 +226,34 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
     for session_index, name in enumerate(session_names):
         indices = np.asarray(
             [
-                index for index, row in enumerate(test_rows)
+                index
+                for index, row in enumerate(test_rows)
                 if row.get("session", "session") == name
             ]
         )
         color = colors(session_index)
         fit_axis.vlines(
-            actual[indices], lower[indices], upper[indices],
-            color=color, alpha=0.18, linewidth=0.8,
+            actual[indices],
+            lower[indices],
+            upper[indices],
+            color=color,
+            alpha=0.18,
+            linewidth=0.8,
         )
         fit_axis.scatter(
-            actual[indices], expected[indices], color=color, alpha=0.7,
-            label=name if len(session_names) > 1 else "Temporal holdout windows",
+            actual[indices],
+            expected[indices],
+            color=color,
+            alpha=0.7,
+            label=name
+            if len(session_names) > 1
+            else "Temporal holdout windows",
         )
         residual_axis.scatter(
-            actual[indices], expected[indices] - actual[indices],
-            color=color, alpha=0.7,
+            actual[indices],
+            expected[indices] - actual[indices],
+            color=color,
+            alpha=0.7,
         )
     minimum = float(min(actual.min(), expected.min(), lower.min()))
     maximum = float(max(actual.max(), expected.max(), upper.max()))
@@ -223,9 +272,7 @@ def plot_kernel_energy_test_scatter(plt, output_dir, window_rows, series):
     )
     fit_axis.grid(alpha=0.2)
     fit_axis.legend()
-    residual_axis.axhline(
-        0.0, color="black", linestyle="--", linewidth=1.2
-    )
+    residual_axis.axhline(0.0, color="black", linestyle="--", linewidth=1.2)
     residual_axis.set_xlabel("Measured dynamic energy (J/window)")
     residual_axis.set_ylabel("Distance from central line (J/window)")
     residual_axis.grid(alpha=0.2)
@@ -245,7 +292,9 @@ PREDICTED_COLOR = "#2a78d6"
 REFERENCE_COLOR = "#8a8984"
 
 
-def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_metrics):
+def plot_session_energy(
+    plt, output_dir, session_rows, session_metrics, test_metrics
+):
     # Numbered markers (shared with the power panel's ticks) stay legible when
     # sessions with similar totals cluster; full names would collide.
     rows = sorted(
@@ -268,7 +317,9 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
     )
 
     figure, (energy_axis, power_axis) = plt.subplots(
-        1, 2, figsize=(15, max(6.0, 0.5 * len(rows) + 3.0)),
+        1,
+        2,
+        figsize=(15, max(6.0, 0.5 * len(rows) + 3.0)),
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
 
@@ -277,31 +328,50 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
         max(measured.max(), upper.max(), predictive_upper.max())
     )
     energy_axis.plot(
-        [limit_low, limit_high], [limit_low, limit_high],
-        color=REFERENCE_COLOR, linestyle="--", linewidth=1.2,
+        [limit_low, limit_high],
+        [limit_low, limit_high],
+        color=REFERENCE_COLOR,
+        linestyle="--",
+        linewidth=1.2,
         label="Predicted = measured",
     )
     energy_axis.errorbar(
-        measured, predicted,
-        yerr=np.vstack([predicted - predictive_lower, predictive_upper - predicted]),
-        fmt="none", ecolor=PREDICTED_COLOR, alpha=0.45,
-        capsize=4, elinewidth=1.0, label="95% predictive interval",
+        measured,
+        predicted,
+        yerr=np.vstack(
+            [predicted - predictive_lower, predictive_upper - predicted]
+        ),
+        fmt="none",
+        ecolor=PREDICTED_COLOR,
+        alpha=0.45,
+        capsize=4,
+        elinewidth=1.0,
+        label="95% predictive interval",
     )
     energy_axis.errorbar(
-        measured, predicted,
+        measured,
+        predicted,
         yerr=np.vstack([predicted - lower, upper - predicted]),
-        fmt="o", color=PREDICTED_COLOR, ecolor=PREDICTED_COLOR,
-        markersize=7, capsize=0, elinewidth=3.0,
-        markeredgecolor="white", markeredgewidth=1.0,
+        fmt="o",
+        color=PREDICTED_COLOR,
+        ecolor=PREDICTED_COLOR,
+        markersize=7,
+        capsize=0,
+        elinewidth=3.0,
+        markeredgecolor="white",
+        markeredgewidth=1.0,
         label="Posterior mean ± 95% credible interval",
     )
     for index, (number, x_value, y_value) in enumerate(
         zip(numbers, measured, predicted)
     ):
         energy_axis.annotate(
-            number, (x_value, y_value),
+            number,
+            (x_value, y_value),
             xytext=(-12, 2) if index % 2 else (6, -10),
-            textcoords="offset points", fontsize=8, fontweight="bold",
+            textcoords="offset points",
+            fontsize=8,
+            fontweight="bold",
             color=MEASURED_COLOR,
         )
     energy_axis.set_xlim(limit_low, limit_high)
@@ -312,13 +382,18 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
     energy_axis.set_title("Total holdout energy per session")
     energy_axis.grid(alpha=0.2)
     energy_axis.legend(loc="lower right", fontsize=8)
+    session_credible = session_metrics["credible_interval_95_coverage"]
+    session_predictive = session_metrics["predictive_interval_95_coverage"]
     energy_axis.text(
-        0.03, 0.97,
+        0.03,
+        0.97,
         "\n".join(
             [
                 "Per session (energy totals):",
                 "  R² = "
-                + format_optional(session_metrics["energy_r_squared"], "{:.4f}"),
+                + format_optional(
+                    session_metrics["energy_r_squared"], "{:.4f}"
+                ),
                 "  Mean |error| = "
                 + format_optional(
                     session_metrics["mean_absolute_energy_error_pct"], "{:.1f}%"
@@ -328,11 +403,12 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
                     session_metrics["total_energy_error_pct"], "{:+.1f}%"
                 ),
                 "  95% coverage: credible "
-                + f"{100.0 * session_metrics['credible_interval_95_coverage']:.0f}%"
+                + f"{100.0 * session_credible:.0f}%"
                 + ", predictive "
-                + f"{100.0 * session_metrics['predictive_interval_95_coverage']:.0f}%",
+                + f"{100.0 * session_predictive:.0f}%",
                 "Per window (power):",
-                "  R² = " + format_optional(test_metrics["r_squared"], "{:.4f}"),
+                "  R² = "
+                + format_optional(test_metrics["r_squared"], "{:.4f}"),
                 f"  RMSE = {test_metrics['rmse_w']:.3f} W",
                 "  95% coverage: credible "
                 + format_optional(
@@ -344,7 +420,9 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
                 ),
             ]
         ),
-        transform=energy_axis.transAxes, va="top", fontsize=9,
+        transform=energy_axis.transAxes,
+        va="top",
+        fontsize=9,
         family="monospace",
         bbox={"facecolor": "white", "alpha": 0.9, "edgecolor": "#d6d5d0"},
     )
@@ -355,22 +433,34 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
         positions + offset,
         [row["measured_power_min_w"] for row in rows],
         [row["measured_power_max_w"] for row in rows],
-        color=MEASURED_COLOR, linewidth=2.0, label="Measured min–max",
+        color=MEASURED_COLOR,
+        linewidth=2.0,
+        label="Measured min–max",
     )
     power_axis.plot(
-        [row["measured_power_mean_w"] for row in rows], positions + offset,
-        "o", color=MEASURED_COLOR, markersize=7, markeredgecolor="white",
+        [row["measured_power_mean_w"] for row in rows],
+        positions + offset,
+        "o",
+        color=MEASURED_COLOR,
+        markersize=7,
+        markeredgecolor="white",
         label="Measured mean",
     )
     power_axis.hlines(
         positions - offset,
         [row["predicted_power_min_w"] for row in rows],
         [row["predicted_power_max_w"] for row in rows],
-        color=PREDICTED_COLOR, linewidth=2.0, label="Predicted min–max",
+        color=PREDICTED_COLOR,
+        linewidth=2.0,
+        label="Predicted min–max",
     )
     power_axis.plot(
-        [row["predicted_power_mean_w"] for row in rows], positions - offset,
-        "o", color=PREDICTED_COLOR, markersize=7, markeredgecolor="white",
+        [row["predicted_power_mean_w"] for row in rows],
+        positions - offset,
+        "o",
+        color=PREDICTED_COLOR,
+        markersize=7,
+        markeredgecolor="white",
         label="Predicted mean",
     )
     power_axis.set_yticks(positions, labels, fontsize=8)
@@ -386,11 +476,15 @@ def plot_session_energy(plt, output_dir, session_rows, session_metrics, test_met
 
 
 def create_plots(
-    output_dir, window_rows, family_rows,
-    session_rows=None, session_metrics=None, test_metrics=None,
+    output_dir,
+    window_rows,
+    family_rows,
+    session_rows=None,
+    session_metrics=None,
+    test_metrics=None,
 ):
     try:
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
     except ImportError as error:
         raise RuntimeError("--plot requires matplotlib") from error
 
@@ -414,7 +508,10 @@ def create_plots(
 def plot_power_transfer(plt, output_dir, rows, calibration_count, labels):
     source, target = labels
     elapsed = np.asarray(
-        [(row["start_ns"] - rows[0]["start_ns"]) / NS_PER_SECOND for row in rows]
+        [
+            (row["start_ns"] - rows[0]["start_ns"]) / NS_PER_SECOND
+            for row in rows
+        ]
     )
     figure, axis = plt.subplots(figsize=(13, 6))
     axis.plot(
@@ -436,7 +533,10 @@ def plot_power_transfer(plt, output_dir, rows, calibration_count, labels):
         axis.fill_between(elapsed, lower, upper, color=color, alpha=0.12)
     if calibration_count:
         axis.axvspan(
-            elapsed[0], elapsed[calibration_count - 1], color="grey", alpha=0.15,
+            elapsed[0],
+            elapsed[calibration_count - 1],
+            color="grey",
+            alpha=0.15,
             label=f"{target} calibration prefix",
         )
     axis.axvline(
@@ -452,14 +552,20 @@ def plot_power_transfer(plt, output_dir, rows, calibration_count, labels):
     plt.close(figure)
 
 
-def plot_energy_scatter(plt, output_dir, rows, calibration_count, metrics, labels):
+def plot_energy_scatter(
+    plt, output_dir, rows, calibration_count, metrics, labels
+):
     source, target = labels
     test_rows = rows[calibration_count:]
     actual = np.asarray([row["measured_dynamic_energy_j"] for row in test_rows])
     figure, axes = plt.subplots(1, 2, figsize=(13, 6), sharex=True, sharey=True)
     methods = (
         ("zero_shot", f"Zero-shot {source} to {target}", "tab:blue"),
-        ("calibrated", f"Minimally calibrated {source} to {target}", "tab:orange"),
+        (
+            "calibrated",
+            f"Minimally calibrated {source} to {target}",
+            "tab:orange",
+        ),
     )
     all_values = [actual]
     for prefix, _, _ in methods:
@@ -479,11 +585,16 @@ def plot_energy_scatter(plt, output_dir, rows, calibration_count, metrics, label
         upper = np.asarray(
             [row[f"{prefix}_energy_upper_95_j"] for row in test_rows]
         )
-        axis.vlines(actual, lower, upper, color=color, alpha=0.18, linewidth=0.8)
+        axis.vlines(
+            actual, lower, upper, color=color, alpha=0.18, linewidth=0.8
+        )
         axis.scatter(actual, predicted, color=color, alpha=0.7, s=22)
         axis.plot(
-            [minimum, maximum], [minimum, maximum], color="black",
-            linestyle="--", linewidth=1.1,
+            [minimum, maximum],
+            [minimum, maximum],
+            color="black",
+            linestyle="--",
+            linewidth=1.1,
         )
         method_metrics = metrics[prefix]
         r_squared = method_metrics["r_squared"]
@@ -491,7 +602,8 @@ def plot_energy_scatter(plt, output_dir, rows, calibration_count, metrics, label
         axis.text(
             0.04,
             0.96,
-            f"Power RMSE: {method_metrics['rmse_w']:.3f} W\nPower R²: {r_label}",
+            f"Power RMSE: {method_metrics['rmse_w']:.3f} W\n"
+            f"Power R²: {r_label}",
             transform=axis.transAxes,
             va="top",
             bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
@@ -507,13 +619,20 @@ def plot_energy_scatter(plt, output_dir, rows, calibration_count, metrics, label
 
 
 def create_transfer_plots(  # pylint: disable=too-many-arguments
-    output_dir, rows, calibration_count, family_rows, metrics, labels=("Thor", "V100"),
+    output_dir,
+    rows,
+    calibration_count,
+    family_rows,
+    metrics,
+    labels=("Thor", "V100"),
 ):
     """Transfer figures; ``labels`` are the (source, target) GPU names."""
     try:
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # pylint: disable=import-outside-toplevel
     except ImportError as error:
         raise RuntimeError("--plot requires matplotlib") from error
     plot_power_transfer(plt, output_dir, rows, calibration_count, labels)
-    plot_energy_scatter(plt, output_dir, rows, calibration_count, metrics, labels)
+    plot_energy_scatter(
+        plt, output_dir, rows, calibration_count, metrics, labels
+    )
     plot_kernel_family_energy(plt, output_dir, family_rows)

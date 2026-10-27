@@ -13,8 +13,11 @@ DESCRIPTION = (
 
 def main(argv=None):
     return run_command(
-        TelemetryMultiSessionConfig, DESCRIPTION, run_telemetry_multisession,
-        print_telemetry_multisession_report, argv,
+        TelemetryMultiSessionConfig,
+        DESCRIPTION,
+        run_telemetry_multisession,
+        print_telemetry_multisession_report,
+        argv,
     )
 
 

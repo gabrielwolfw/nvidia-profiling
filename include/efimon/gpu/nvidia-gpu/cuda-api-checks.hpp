@@ -1,4 +1,12 @@
-#pragma once
+/**
+ * @file cuda-api-checks.hpp
+ * @brief Error-checking helpers for CUDA driver, runtime and CUPTI calls
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#ifndef INCLUDE_EFIMON_GPU_NVIDIA_GPU_CUDA_API_CHECKS_HPP_
+#define INCLUDE_EFIMON_GPU_NVIDIA_GPU_CUDA_API_CHECKS_HPP_
 
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -34,18 +42,20 @@ inline void CheckCudaRuntime(cudaError_t result, const char* expression,
                              const char* file, int line) {
   if (result == cudaSuccess) return;
   throw std::runtime_error(std::string(file) + ":" + std::to_string(line) +
-                           ": " + expression + " failed: " +
-                           cudaGetErrorString(result));
+                           ": " + expression +
+                           " failed: " + cudaGetErrorString(result));
 }
 
 }  // namespace nvidia_process_metrics
 
-#define CUPTI_API_CALL(expression)                                           \
+#define CUPTI_API_CALL(expression)                                          \
   ::nvidia_process_metrics::CheckCupti((expression), #expression, __FILE__, \
-                                        __LINE__)
-#define DRIVER_API_CALL(expression)                                         \
-  ::nvidia_process_metrics::CheckCudaDriver((expression), #expression,      \
+                                       __LINE__)
+#define DRIVER_API_CALL(expression)                                    \
+  ::nvidia_process_metrics::CheckCudaDriver((expression), #expression, \
+                                            __FILE__, __LINE__)
+#define RUNTIME_API_CALL(expression)                                    \
+  ::nvidia_process_metrics::CheckCudaRuntime((expression), #expression, \
                                              __FILE__, __LINE__)
-#define RUNTIME_API_CALL(expression)                                        \
-  ::nvidia_process_metrics::CheckCudaRuntime((expression), #expression,     \
-                                              __FILE__, __LINE__)
+
+#endif  // INCLUDE_EFIMON_GPU_NVIDIA_GPU_CUDA_API_CHECKS_HPP_

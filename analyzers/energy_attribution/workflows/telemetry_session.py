@@ -44,8 +44,15 @@ def load_windows(telemetry, kernels, window_ns, min_telemetry_samples):
         kernels, origin_ns, window_count, window_ns
     )
     rows, features, targets = build_dataset(
-        origin_ns, window_count, window_ns, counts, sums,
-        kernel_count, duration_sum_ns, active_ns, min_telemetry_samples,
+        origin_ns,
+        window_count,
+        window_ns,
+        counts,
+        sums,
+        kernel_count,
+        duration_sum_ns,
+        active_ns,
+        min_telemetry_samples,
     )
     return origin_ns, rows, features, targets
 
@@ -54,15 +61,26 @@ def analyze(config: TelemetrySessionConfig) -> TelemetrySessionResult:
     """Fit the telemetry-feature model to one session; writes nothing."""
     window_ns = config.window_ns
     _, rows, features, targets = load_windows(
-        config.telemetry, config.kernels, window_ns, config.min_telemetry_samples
+        config.telemetry,
+        config.kernels,
+        window_ns,
+        config.min_telemetry_samples,
     )
     train_count = split_point(len(rows), config.train_fraction, strict=False)
     fit = fit_bayesian_regression(
-        features, targets, train_count, config.prior_scale,
-        config.posterior_draws, config.seed,
+        features,
+        targets,
+        train_count,
+        config.prior_scale,
+        config.posterior_draws,
+        config.seed,
     )
     (
-        predicted, credible_lower, credible_upper, predictive_lower, predictive_upper,
+        predicted,
+        credible_lower,
+        credible_upper,
+        predictive_lower,
+        predictive_upper,
     ) = posterior_intervals(fit)
 
     prediction_rows = []
@@ -76,7 +94,9 @@ def analyze(config: TelemetrySessionConfig) -> TelemetrySessionResult:
                 "credible_power_upper_w": credible_upper[index],
                 "predictive_power_lower_w": predictive_lower[index],
                 "predictive_power_upper_w": predictive_upper[index],
-                "predicted_energy_j": predicted[index] * window_ns / NS_PER_SECOND,
+                "predicted_energy_j": predicted[index]
+                * window_ns
+                / NS_PER_SECOND,
                 "power_residual_w": targets[index] - predicted[index],
             }
         )
@@ -84,17 +104,24 @@ def analyze(config: TelemetrySessionConfig) -> TelemetrySessionResult:
 
     train, test = slice(0, train_count), slice(train_count, None)
     train_metrics = interval_regression_metrics(
-        targets[train], predicted[train], predictive_lower[train], predictive_upper[train]
+        targets[train],
+        predicted[train],
+        predictive_lower[train],
+        predictive_upper[train],
     )
     test_metrics = interval_regression_metrics(
-        targets[test], predicted[test], predictive_lower[test], predictive_upper[test]
+        targets[test],
+        predicted[test],
+        predictive_lower[test],
+        predictive_upper[test],
     )
     baseline = np.full(len(targets) - train_count, targets[train].mean())
     baseline_rmse = float(np.sqrt(np.mean((targets[test] - baseline) ** 2)))
     summary = {
         "model": "conjugate_bayesian_linear_regression",
         "interpretation": (
-            "Initial within-run diagnostic model; validation across independent "
+            "Initial within-run diagnostic model; validation across "
+            "independent "
             "runs is required before general use."
         ),
         "window_ms": config.window_ms,
@@ -113,7 +140,9 @@ def analyze(config: TelemetrySessionConfig) -> TelemetrySessionResult:
         config=config,
         prediction_rows=prediction_rows,
         coefficient_rows=coefficient_rows(
-            fit, "W at training feature means", "W per one training standard deviation"
+            fit,
+            "W at training feature means",
+            "W per one training standard deviation",
         ),
         train_count=train_count,
         targets=targets,

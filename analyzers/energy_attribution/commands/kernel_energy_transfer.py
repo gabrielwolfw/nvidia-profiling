@@ -14,7 +14,11 @@ DESCRIPTION = (
 
 def main(argv=None):
     return run_command(
-        CrossGpuConfig, DESCRIPTION, run_cross_gpu, print_cross_gpu_report, argv,
+        CrossGpuConfig,
+        DESCRIPTION,
+        run_cross_gpu,
+        print_cross_gpu_report,
+        argv,
     )
 
 

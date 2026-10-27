@@ -1,9 +1,8 @@
-"""Vectorized aggregation of kernel activity and NVML energy into time windows."""
+"""Vectorized aggregation of kernel activity and NVML energy per window."""
 
 import numpy as np
 
 from energy_attribution.units import NS_PER_SECOND
-
 
 EVENT_CHUNK = 1_000_000
 
@@ -37,9 +36,8 @@ def split_by_windows(starts, ends, analysis_start, analysis_end, window_ns):
     if np.all(spans == 1):
         window_start = analysis_start + first * window_ns
         window_end = np.minimum(window_start + window_ns, analysis_end)
-        overlap = (
-            np.minimum(clipped_end, window_end)
-            - np.maximum(clipped_start, window_start)
+        overlap = np.minimum(clipped_end, window_end) - np.maximum(
+            clipped_start, window_start
         )
         return inside, first, overlap
 
@@ -49,10 +47,9 @@ def split_by_windows(starts, ends, analysis_start, analysis_end, window_ns):
     window = np.repeat(first, spans) + piece_offsets
     window_start = analysis_start + window * window_ns
     window_end = np.minimum(window_start + window_ns, analysis_end)
-    overlap = (
-        np.minimum(np.repeat(clipped_end, spans), window_end)
-        - np.maximum(np.repeat(clipped_start, spans), window_start)
-    )
+    overlap = np.minimum(
+        np.repeat(clipped_end, spans), window_end
+    ) - np.maximum(np.repeat(clipped_start, spans), window_start)
     return np.repeat(inside, spans), window, overlap
 
 
@@ -92,8 +89,11 @@ def aggregate_family_activity(
     for offset in range(0, len(table), EVENT_CHUNK):
         chunk = slice(offset, offset + EVENT_CHUNK)
         owner, window, overlap = split_by_windows(
-            table.start_ns[chunk], table.end_ns[chunk],
-            analysis_start, analysis_end, window_ns,
+            table.start_ns[chunk],
+            table.end_ns[chunk],
+            analysis_start,
+            analysis_end,
+            window_ns,
         )
         activity_ns += np.bincount(
             window * family_count + columns[chunk][owner],
@@ -112,25 +112,37 @@ def aggregate_family_activity(
         _, window, overlap = split_by_windows(
             piece_start, piece_end, analysis_start, analysis_end, window_ns
         )
-        union_active_ns += np.bincount(window, weights=overlap, minlength=windows)
+        union_active_ns += np.bincount(
+            window, weights=overlap, minlength=windows
+        )
     return activity_ns.reshape(windows, family_count), union_active_ns
 
 
 def distribute_to_events(
-    table, columns, activity_ns, window_family_values,
-    analysis_start, analysis_end, window_ns,
+    table,
+    columns,
+    activity_ns,
+    window_family_values,
+    analysis_start,
+    analysis_end,
+    window_ns,
 ):
     """Spread (window, family) quantities to events by temporal overlap.
 
     Each event receives ``value[w, family] * overlap / activity_ns[w, family]``
     summed over the windows it touches. Returns one array per input matrix.
     """
-    outputs = [np.zeros(len(table), dtype=np.float64) for _ in window_family_values]
+    outputs = [
+        np.zeros(len(table), dtype=np.float64) for _ in window_family_values
+    ]
     for offset in range(0, len(table), EVENT_CHUNK):
         chunk = slice(offset, offset + EVENT_CHUNK)
         owner, window, overlap = split_by_windows(
-            table.start_ns[chunk], table.end_ns[chunk],
-            analysis_start, analysis_end, window_ns,
+            table.start_ns[chunk],
+            table.end_ns[chunk],
+            analysis_start,
+            analysis_end,
+            window_ns,
         )
         family = columns[chunk][owner]
         family_duration = activity_ns[window, family]
@@ -175,21 +187,33 @@ def integrate_windows(trace, window_starts, window_ends, idle_power_mw):
                 continue
             left_p, right_p = power[segment], power[segment + 1]
             span = right_t - left_t
-            start_device = left_p + (overlap_start - left_t) / span * (right_p - left_p)
-            end_device = left_p + (overlap_end - left_t) / span * (right_p - left_p)
+            start_device = left_p + (overlap_start - left_t) / span * (
+                right_p - left_p
+            )
+            end_device = left_p + (overlap_end - left_t) / span * (
+                right_p - left_p
+            )
             seconds = (overlap_end - overlap_start) / NS_PER_SECOND
             device_energy += 0.5 * (start_device + end_device) * seconds
-            dynamic_energy += 0.5 * (
-                max(0.0, start_device - idle_power_mw)
-                + max(0.0, end_device - idle_power_mw)
-            ) * seconds
+            dynamic_energy += (
+                0.5
+                * (
+                    max(0.0, start_device - idle_power_mw)
+                    + max(0.0, end_device - idle_power_mw)
+                )
+                * seconds
+            )
         device[window] = device_energy
         dynamic[window] = dynamic_energy
     return device, dynamic
 
 
 def build_windows(
-    trace, union_active_ns, analysis_start, analysis_end, window_ns,
+    trace,
+    union_active_ns,
+    analysis_start,
+    analysis_end,
+    window_ns,
     idle_power_mw,
 ):
     """Return per-window diagnostic rows and the dynamic-power target (W)."""

@@ -13,8 +13,11 @@ DESCRIPTION = (
 
 def main(argv=None):
     return run_command(
-        SingleSessionConfig, DESCRIPTION, run_single_session,
-        print_single_session_report, argv,
+        SingleSessionConfig,
+        DESCRIPTION,
+        run_single_session,
+        print_single_session_report,
+        argv,
     )
 
 

@@ -1,4 +1,12 @@
-#pragma once
+/**
+ * @file ipc.hpp
+ * @brief Unix-socket protocol shared by the daemon and the launcher
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#ifndef SRC_TOOLS_GPU_IPC_HPP_
+#define SRC_TOOLS_GPU_IPC_HPP_
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -13,7 +21,7 @@
 namespace nvidia_process_metrics {
 
 constexpr const char* kDefaultSocketPath =
-    "/run/nvidia-process-metrics/daemon.sock";
+    "/run/nvidia-process-metrics/daemon.sock";  // NOLINT
 
 inline std::vector<std::string> SplitFields(const std::string& message) {
   std::vector<std::string> fields;
@@ -90,3 +98,5 @@ inline std::string Request(const std::string& socket_path,
 }
 
 }  // namespace nvidia_process_metrics
+
+#endif  // SRC_TOOLS_GPU_IPC_HPP_

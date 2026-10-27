@@ -54,10 +54,14 @@ def load_power_trace(path):
     skipped = 0
     with path.open(newline="", encoding="utf-8") as source:
         reader = csv.DictReader(source)
-        require_fields(reader.fieldnames, {"timestamp_ns", "power_mw"}, "Telemetry")
+        require_fields(
+            reader.fieldnames, {"timestamp_ns", "power_mw"}, "Telemetry"
+        )
         for row in reader:
             try:
-                samples.append((int(row["timestamp_ns"]), float(row["power_mw"])))
+                samples.append(
+                    (int(row["timestamp_ns"]), float(row["power_mw"]))
+                )
             except (TypeError, ValueError):
                 skipped += 1
     if skipped:
@@ -70,7 +74,9 @@ def load_power_trace(path):
         else:
             deduplicated.append((timestamp, power))
     if len(deduplicated) < 2:
-        raise ValueError("At least two distinct telemetry timestamps are required")
+        raise ValueError(
+            "At least two distinct telemetry timestamps are required"
+        )
     return PowerTrace(
         np.fromiter((sample[0] for sample in deduplicated), dtype=np.int64),
         np.fromiter((sample[1] for sample in deduplicated), dtype=np.float64),
@@ -199,5 +205,7 @@ def load_kernels(path, load_event_ids=False, chunk_rows=KERNEL_CHUNK_ROWS):
         skipped=skipped,
     )
     if len(table) > 1 and np.any(np.diff(table.start_ns) < 0):
-        raise ValueError("Kernel rows must be sorted by start_ns for streaming analysis")
+        raise ValueError(
+            "Kernel rows must be sorted by start_ns for streaming analysis"
+        )
     return table

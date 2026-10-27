@@ -6,7 +6,8 @@ column names and order must match exactly, numbers within 1e-9 relative.
 
 After an intended behaviour change, regenerate the golden files with:
 
-    UPDATE_GOLDEN=1 python3 -m pytest energy_attribution/tests/test_regression.py
+    UPDATE_GOLDEN=1 python3 -m pytest \
+        analyzers/energy_attribution/tests/test_regression.py
 """
 
 from argparse import Namespace
@@ -37,7 +38,6 @@ from energy_attribution import (  # pylint: disable=wrong-import-position
 from energy_attribution.cli import (  # pylint: disable=wrong-import-position
     config_from_namespace,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ANALYZERS_ROOT = REPO_ROOT / "analyzers"
@@ -99,36 +99,56 @@ class ConfigurationTests(unittest.TestCase):
 def scenarios(fixture):
     single = fixture / "train" / "s3-mixed"
     session_files = [
-        "--telemetry", str(single / "gpu_telemetry.csv"),
-        "--kernels", str(single / "kernel_activity.csv"),
+        "--telemetry",
+        str(single / "gpu_telemetry.csv"),
+        "--kernels",
+        str(single / "kernel_activity.csv"),
     ]
     return {
         "single": [
-            "analyze_bayesian_kernel_energy.py", *session_files,
-            "--max-families", "5", "--plot",
+            "analyze_bayesian_kernel_energy.py",
+            *session_files,
+            "--max-families",
+            "5",
+            "--plot",
         ],
         "single_legacy": [
-            "analyze_bayesian_kernel_energy.py", *session_files,
-            "--max-families", "5", "--attribution", "active-fraction",
-            "--min-window-fraction", "0", "--skip-event-output",
+            "analyze_bayesian_kernel_energy.py",
+            *session_files,
+            "--max-families",
+            "5",
+            "--attribution",
+            "active-fraction",
+            "--min-window-fraction",
+            "0",
+            "--skip-event-output",
         ],
         "multisession": [
             "analyze_bayesian_kernel_energy_multisession.py",
-            "--sessions-root", str(fixture / "train"), "--max-families", "5",
+            "--sessions-root",
+            str(fixture / "train"),
+            "--max-families",
+            "5",
         ],
         "transfer": [
             "analyze_bayesian_kernel_energy_transfer.py",
-            "--train-sessions-root", str(fixture / "train"),
+            "--train-sessions-root",
+            str(fixture / "train"),
             "--external-test-session",
             str(fixture / "external" / EXTERNAL_SESSION[0]),
-            "--max-families", "5",
+            "--max-families",
+            "5",
         ],
         "telemetry_single": [
-            "bayesian_energy_model.py", *session_files, "--plot",
+            "bayesian_energy_model.py",
+            *session_files,
+            "--plot",
         ],
         "telemetry_multisession": [
             "analyze_bayesian_energy.py",
-            "--sessions-root", str(fixture / "train"), "--plot",
+            "--sessions-root",
+            str(fixture / "train"),
+            "--plot",
         ],
     }
 
@@ -147,8 +167,10 @@ def values_match(expected, actual):
     if math.isnan(expected_number) or math.isnan(actual_number):
         return math.isnan(expected_number) and math.isnan(actual_number)
     return math.isclose(
-        expected_number, actual_number,
-        rel_tol=RELATIVE_TOLERANCE, abs_tol=ABSOLUTE_TOLERANCE,
+        expected_number,
+        actual_number,
+        rel_tol=RELATIVE_TOLERANCE,
+        abs_tol=ABSOLUTE_TOLERANCE,
     )
 
 
@@ -161,16 +183,25 @@ def compare_json(expected, actual, location="$"):
     """Yield human-readable differences between two JSON documents."""
     if isinstance(expected, dict) and isinstance(actual, dict):
         if set(expected) != set(actual):
-            yield f"{location}: keys differ {sorted(set(expected) ^ set(actual))}"
+            yield (
+                f"{location}: keys differ "
+                f"{sorted(set(expected) ^ set(actual))}"
+            )
         for key in set(expected) & set(actual):
             if key not in PATH_KEYS:
-                yield from compare_json(expected[key], actual[key], f"{location}.{key}")
+                yield from compare_json(
+                    expected[key], actual[key], f"{location}.{key}"
+                )
     elif isinstance(expected, list) and isinstance(actual, list):
         if len(expected) != len(actual):
             yield f"{location}: length {len(expected)} != {len(actual)}"
         for index, (left, right) in enumerate(zip(expected, actual)):
             yield from compare_json(left, right, f"{location}[{index}]")
-    elif isinstance(expected, bool) or expected is None or isinstance(expected, str):
+    elif (
+        isinstance(expected, bool)
+        or expected is None
+        or isinstance(expected, str)
+    ):
         if expected != actual:
             yield f"{location}: {expected!r} != {actual!r}"
     elif not values_match(expected, actual):
@@ -198,7 +229,10 @@ class WorkflowRegressionTests(unittest.TestCase):
                     "--output-dir",
                     str(output),
                 ],
-                cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
             )
             cls.outputs[name] = output
             if UPDATE_GOLDEN:
@@ -217,12 +251,18 @@ class WorkflowRegressionTests(unittest.TestCase):
         golden = GOLDEN_ROOT / name
         output = self.outputs[name]
         expected_files = sorted(
-            path.name for path in golden.iterdir() if path.suffix in (".csv", ".json")
+            path.name
+            for path in golden.iterdir()
+            if path.suffix in (".csv", ".json")
         )
         actual_files = sorted(
-            path.name for path in output.iterdir() if path.suffix in (".csv", ".json")
+            path.name
+            for path in output.iterdir()
+            if path.suffix in (".csv", ".json")
         )
-        self.assertEqual(expected_files, actual_files, f"{name}: output files differ")
+        self.assertEqual(
+            expected_files, actual_files, f"{name}: output files differ"
+        )
         for file_name in expected_files:
             with self.subTest(scenario=name, file=file_name):
                 if file_name.endswith(".json"):
@@ -237,13 +277,17 @@ class WorkflowRegressionTests(unittest.TestCase):
                 expected = read_csv_rows(golden / file_name)
                 actual = read_csv_rows(output / file_name)
                 self.assertEqual(expected[0], actual[0], "CSV columns differ")
-                self.assertEqual(len(expected), len(actual), "CSV row counts differ")
+                self.assertEqual(
+                    len(expected), len(actual), "CSV row counts differ"
+                )
                 mismatches = [
                     f"row {row}, {expected[0][column]}: {left!r} != {right!r}"
                     for row, (expected_row, actual_row) in enumerate(
                         zip(expected[1:], actual[1:]), start=1
                     )
-                    for column, (left, right) in enumerate(zip(expected_row, actual_row))
+                    for column, (left, right) in enumerate(
+                        zip(expected_row, actual_row)
+                    )
                     if not values_match(left, right)
                 ]
                 self.assertFalse(mismatches, "\n".join(mismatches[:10]))
@@ -295,7 +339,11 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertEqual(result.summary["kernel_families"], 5)
         self.assertGreater(result.summary["test_windows"], 0)
         self.assertEqual(len(result.family_rows), 5)
-        self.assertTrue((config.output_dir / "bayesian_kernel_energy_summary.json").is_file())
+        self.assertTrue(
+            (
+                config.output_dir / "bayesian_kernel_energy_summary.json"
+            ).is_file()
+        )
 
     def test_analyze_writes_nothing(self):
         config = self.api_config("analyze-only", skip_event_output=False)

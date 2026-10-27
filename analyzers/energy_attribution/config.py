@@ -54,7 +54,9 @@ class ModelConfig:  # pylint: disable=too-many-instance-attributes
         if self.burn_in < 0 or self.posterior_draws < 100 or self.thin < 1:
             raise ValueError("invalid MCMC settings")
         if self.min_windows_per_parameter <= 0.0:
-            raise ValueError("min_windows_per_parameter must be greater than zero")
+            raise ValueError(
+                "min_windows_per_parameter must be greater than zero"
+            )
         if not 0.0 <= self.min_window_fraction <= 1.0:
             raise ValueError("min_window_fraction must be in [0, 1]")
         if self.attribution not in ATTRIBUTION_MODES:

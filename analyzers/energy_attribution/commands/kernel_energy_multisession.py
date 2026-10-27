@@ -13,8 +13,11 @@ DESCRIPTION = (
 
 def main(argv=None):
     return run_command(
-        MultiSessionConfig, DESCRIPTION, run_multisession,
-        print_multisession_report, argv,
+        MultiSessionConfig,
+        DESCRIPTION,
+        run_multisession,
+        print_multisession_report,
+        argv,
     )
 
 

@@ -1,21 +1,29 @@
-#include "gpu/ipc.hpp"
-#include "nvidia-process-metrics-config.hpp"
+/**
+ * @file launcher.cpp
+ * @brief Launcher that runs or attaches a workload to a daemon session
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
 
-#include <sys/wait.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#include "gpu/ipc.hpp"                        // NOLINT
+#include "nvidia-process-metrics-config.hpp"  // NOLINT
 
 namespace {
 
@@ -35,7 +43,7 @@ void RequestShutdown(int signal_number) {
 }
 
 void InstallSignalHandlers() {
-  struct sigaction action {};
+  struct sigaction action{};
   action.sa_handler = RequestShutdown;
   sigemptyset(&action.sa_mask);
   if (sigaction(SIGINT, &action, nullptr) != 0 ||
@@ -47,8 +55,7 @@ void InstallSignalHandlers() {
 
 struct LauncherOptions {
   std::string socket_path = nvidia_process_metrics::kDefaultSocketPath;
-  std::string library_path =
-      NVIDIA_PROCESS_METRICS_LIBRARY_PATH;
+  std::string library_path = NVIDIA_PROCESS_METRICS_LIBRARY_PATH;
   int device = 0;
   int duration_seconds = 10;
   int window_ms = 200;
@@ -58,11 +65,12 @@ struct LauncherOptions {
 };
 
 void PrintHelp() {
-  std::cout << "Usage:\n"
-            << "  nvidia-process-metrics-launcher --command -- PROGRAM [ARGS...]\n"
-            << "  nvidia-process-metrics-launcher --pid PID --observe\n\n"
-            << "Options: --device N --duration SECONDS --window-ms MS "
-               "--socket PATH --library PATH\n";
+  std::cout
+      << "Usage:\n"
+      << "  nvidia-process-metrics-launcher --command -- PROGRAM [ARGS...]\n"
+      << "  nvidia-process-metrics-launcher --pid PID --observe\n\n"
+      << "Options: --device N --duration SECONDS --window-ms MS "
+         "--socket PATH --library PATH\n";
 }
 
 LauncherOptions ParseArgs(int argc, char** argv) {
@@ -121,7 +129,8 @@ std::vector<std::string> RequireOk(const std::string& response) {
   return fields;
 }
 
-std::pair<std::string, std::string> CreateSession(const LauncherOptions& options) {
+std::pair<std::string, std::string> CreateSession(
+    const LauncherOptions& options) {
   const std::string response = nvidia_process_metrics::Request(
       options.socket_path, "CREATE " + std::to_string(options.device) + " " +
                                std::to_string(options.duration_seconds) + " " +
@@ -136,13 +145,13 @@ std::pair<std::string, std::string> CreateSession(const LauncherOptions& options
 void StartSession(const LauncherOptions& options, const std::string& session_id,
                   pid_t pid) {
   RequireOk(nvidia_process_metrics::Request(
-      options.socket_path,
-      "START " + session_id + " " + std::to_string(static_cast<long>(pid))));
+      options.socket_path, "START " + session_id + " " + std::to_string(pid)));
 }
 
-void StopSession(const LauncherOptions& options, const std::string& session_id) {
+void StopSession(const LauncherOptions& options,
+                 const std::string& session_id) {
   RequireOk(nvidia_process_metrics::Request(options.socket_path,
-                                             "STOP " + session_id));
+                                            "STOP " + session_id));
 }
 
 void FailSession(const LauncherOptions& options, const std::string& session_id,
@@ -199,7 +208,8 @@ ProfilerCompletion ReadProfilerCompletion(int completion_fd) {
   return {false, "preload_completion_read_failed"};
 }
 
-void PrintResults(const LauncherOptions& options, const std::string& session_id) {
+void PrintResults(const LauncherOptions& options,
+                  const std::string& session_id) {
   const auto fields = RequireOk(nvidia_process_metrics::Request(
       options.socket_path, "STATUS " + session_id));
   if (fields.size() < 4) {
@@ -242,7 +252,7 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
   if (setpgid(0, 0) != 0) {
     _exit(127);
   }
-  struct sigaction default_action {};
+  struct sigaction default_action{};
   default_action.sa_handler = SIG_DFL;
   sigemptyset(&default_action.sa_mask);
   sigaction(SIGINT, &default_action, nullptr);
@@ -264,14 +274,15 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
   }
   setenv("NVIDIA_METRICS_OUTPUT_DIR", output_dir.c_str(), 1);
   setenv("NVIDIA_METRICS_DEVICE", std::to_string(options.device).c_str(), 1);
-  setenv("NVIDIA_METRICS_WINDOW_MS",
-         std::to_string(options.window_ms).c_str(), 1);
-  setenv("NVIDIA_METRICS_COMPLETION_FD",
-         std::to_string(completion_fd).c_str(), 1);
+  setenv("NVIDIA_METRICS_WINDOW_MS", std::to_string(options.window_ms).c_str(),
+         1);
+  setenv("NVIDIA_METRICS_COMPLETION_FD", std::to_string(completion_fd).c_str(),
+         1);
   const char* existing_preload = getenv("LD_PRELOAD");
-  const std::string preload = existing_preload == nullptr
-                                  ? options.library_path
-                                  : options.library_path + ":" + existing_preload;
+  const std::string preload =
+      existing_preload == nullptr
+          ? options.library_path
+          : options.library_path + ":" + existing_preload;
   setenv("LD_PRELOAD", preload.c_str(), 1);
 
   std::vector<char*> arguments;
@@ -286,8 +297,7 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
 int Observe(const LauncherOptions& options) {
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::seconds(options.duration_seconds);
-  while (requested_signal == 0 &&
-         std::chrono::steady_clock::now() < deadline &&
+  while (requested_signal == 0 && std::chrono::steady_clock::now() < deadline &&
          (kill(options.pid, 0) == 0 || errno == EPERM)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -439,7 +449,8 @@ int main(int argc, char** argv) {
     std::cerr << "Target ended with an unknown wait status\n";
     return 1;
   } catch (const std::exception& exception) {
-    std::cerr << "nvidia-process-metrics-launcher: " << exception.what() << '\n';
+    std::cerr << "nvidia-process-metrics-launcher: " << exception.what()
+              << '\n';
     return requested_signal == 0 ? 1 : 128 + requested_signal;
   }
 }

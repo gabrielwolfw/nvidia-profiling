@@ -31,7 +31,8 @@ HELP = {
         "'model' (default) keeps the intercept's share of each window as "
         "baseline energy; 'active-fraction' reproduces the legacy rule."
     ),
-    "min_windows_per_parameter": "Minimum training windows per regression parameter.",
+    "min_windows_per_parameter": "Minimum training windows per regression "
+    "parameter.",
     "allow_underdetermined": (
         "Fit even when training windows per parameter is below the minimum."
     ),
@@ -47,7 +48,9 @@ HELP = {
     "source_label": "Name of the training GPU in console output and plots.",
     "target_label": "Name of the external GPU in console output and plots.",
     "plot": "Generate diagnostic PNG plots (requires matplotlib).",
-    "min_telemetry_samples": "Windows with fewer telemetry samples are dropped.",
+    "min_telemetry_samples": (
+        "Windows with fewer telemetry samples are dropped."
+    ),
     "prior_scale": "Prior standard deviation of standardized coefficients.",
     "platform_label": "Name of the profiled GPU in plot titles.",
     "skip_event_output": (
@@ -85,7 +88,8 @@ def config_from_namespace(config_type: type[ConfigT], namespace) -> ConfigT:
     if names != provided:
         raise ValueError(
             f"{config_type.__name__} fields and CLI options differ: "
-            f"missing {sorted(names - provided)}, unexpected {sorted(provided - names)}"
+            f"missing {sorted(names - provided)}, unexpected "
+            f"{sorted(provided - names)}"
         )
     return config_type(**{name: getattr(namespace, name) for name in names})
 
@@ -111,7 +115,7 @@ def configure_logging(level=logging.INFO):
 
 
 def run_command(config_type, description, analysis, report, argv=None):
-    """Parse ``argv`` into ``config_type``, run ``analysis`` and print ``report``.
+    """Parse ``argv``, run ``analysis`` and print ``report``.
 
     Configuration and input errors exit with status 1 and a one-line message.
     """

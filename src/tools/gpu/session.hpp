@@ -1,17 +1,25 @@
-#pragma once
+/**
+ * @file session.hpp
+ * @brief Daemon-side manager for GPU profiling sessions
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#ifndef SRC_TOOLS_GPU_SESSION_HPP_
+#define SRC_TOOLS_GPU_SESSION_HPP_
 
 #include <sys/types.h>
 
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 
-#include "worker.hpp"
+#include "gpu/worker.hpp"  // NOLINT
 
 namespace nvidia_process_metrics {
 
@@ -64,3 +72,5 @@ class NvidiaProcessMetricsSessionManager {
 };
 
 }  // namespace nvidia_process_metrics
+
+#endif  // SRC_TOOLS_GPU_SESSION_HPP_

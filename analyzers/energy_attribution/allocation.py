@@ -1,4 +1,4 @@
-"""Split measured window energy among kernel families, the baseline and events."""
+"""Split measured window energy among families, baseline and events."""
 
 from dataclasses import dataclass
 
@@ -40,7 +40,11 @@ def attribution_pool_mj(window_rows, attribution):
 
 
 def posterior_energy_allocation(
-    coefficient_draws, activity_ns, pool_energy_mj, duration_ns, attribution="model"
+    coefficient_draws,
+    activity_ns,
+    pool_energy_mj,
+    duration_ns,
+    attribution="model",
 ):
     """Split each window's energy pool among families for every posterior draw.
 
@@ -77,7 +81,8 @@ def posterior_energy_allocation(
         allocation = np.zeros_like(scores)
         positive = denominators > 0.0
         allocation[positive] = (
-            scores[positive] / denominators[positive, None]
+            scores[positive]
+            / denominators[positive, None]
             * pool_energy_mj[window]
         )
         means[window] = allocation.mean(axis=0)
@@ -146,14 +151,24 @@ class EventAttribution:  # pylint: disable=too-many-instance-attributes
 
 
 def attribute_events(
-    table, columns, families, activity_ns, allocation,
-    analysis_start, analysis_end, window_ns,
+    table,
+    columns,
+    families,
+    activity_ns,
+    allocation,
+    analysis_start,
+    analysis_end,
+    window_ns,
 ):
     """Distribute each family's window energy to its events by overlap."""
     mean, lower, upper = distribute_to_events(
-        table, columns, activity_ns,
+        table,
+        columns,
+        activity_ns,
         [allocation.mean, allocation.lower, allocation.upper],
-        analysis_start, analysis_end, window_ns,
+        analysis_start,
+        analysis_end,
+        window_ns,
     )
     return EventAttribution(
         start_ns=table.start_ns,
@@ -168,7 +183,10 @@ def attribute_events(
 
 
 def family_energy_rows(
-    family_index, duration_by_name, event_count_by_name, selected,
+    family_index,
+    duration_by_name,
+    event_count_by_name,
+    selected,
     family_total_draws,
 ):
     """Posterior energy totals per family, largest mean first.
@@ -179,12 +197,16 @@ def family_energy_rows(
     rows = []
     for family, column in family_index.items():
         names = source_names(family, duration_by_name, selected)
-        mean, median, lower, upper = posterior_summary(family_total_draws[:, column])
+        mean, median, lower, upper = posterior_summary(
+            family_total_draws[:, column]
+        )
         rows.append(
             {
                 "kernel_family": family,
                 "event_count": sum(event_count_by_name[name] for name in names),
-                "total_duration_ns": sum(duration_by_name[name] for name in names),
+                "total_duration_ns": sum(
+                    duration_by_name[name] for name in names
+                ),
                 "energy_posterior_mean_mj": mean,
                 "energy_posterior_median_mj": median,
                 "energy_posterior_lower_95_mj": lower,
@@ -193,4 +215,3 @@ def family_energy_rows(
         )
     rows.sort(key=lambda row: row["energy_posterior_mean_mj"], reverse=True)
     return rows
-

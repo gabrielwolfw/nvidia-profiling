@@ -1,4 +1,4 @@
-"""Kernel-family basis: rank kernels, fold rare ones into __other__, encode events."""
+"""Kernel-family basis: rank kernels, fold rare ones, encode events."""
 
 import logging
 from collections import Counter
@@ -34,7 +34,9 @@ class KernelScan:  # pylint: disable=too-many-instance-attributes
 
 def source_names(family, all_names, selected):
     """Kernel names whose events are counted under ``family``."""
-    return set(all_names) - set(selected) if family == OTHER_FAMILY else {family}
+    return (
+        set(all_names) - set(selected) if family == OTHER_FAMILY else {family}
+    )
 
 
 def select_families(duration_by_name, max_families):
@@ -62,7 +64,7 @@ def family_columns(table, selected, family_index):
 
 def scan_kernel_families(table, max_families):
     """Summarize a loaded KernelTable and choose its family basis."""
-    if not len(table):
+    if len(table) == 0:
         raise ValueError("No valid kernel events were found")
     if table.skipped:
         logger.warning("Skipped %d invalid kernel rows.", table.skipped)
@@ -78,4 +80,3 @@ def scan_kernel_families(table, max_families):
         last_end=table.last_end,
         valid_events=len(table),
     )
-

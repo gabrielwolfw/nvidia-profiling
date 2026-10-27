@@ -1,5 +1,9 @@
 """Short labels and console summaries shared by the analyses."""
 
+# Subscripts inside f-strings need single quotes before Python 3.12.
+# pylint: disable=inconsistent-quotes
+
+
 import re
 
 from energy_attribution.diagnostics import log_identifiability_warnings
@@ -47,10 +51,15 @@ def format_optional(value, pattern):
 
 
 def print_coverage(test_metrics, session_metrics):
+    credible = format_optional(
+        test_metrics["credible_interval_95_coverage"], "{:.1%}"
+    )
+    predictive = format_optional(
+        test_metrics["predictive_interval_95_coverage"], "{:.1%}"
+    )
     print(
         "Test 95% coverage per window: "
-        f"credible {format_optional(test_metrics['credible_interval_95_coverage'], '{:.1%}')}, "
-        f"predictive {format_optional(test_metrics['predictive_interval_95_coverage'], '{:.1%}')}"
+        f"credible {credible}, predictive {predictive}"
     )
     print(
         "Test 95% coverage of session energy: "
@@ -61,14 +70,23 @@ def print_coverage(test_metrics, session_metrics):
 
 def print_energy_balance(accounting, *, detailed):
     if detailed:
-        print(f"Measured dynamic energy: {accounting['measured_dynamic_energy_mj']:.3f} mJ")
+        print(
+            "Measured dynamic energy: "
+            f"{accounting['measured_dynamic_energy_mj']:.3f} mJ"
+        )
         print(
             "Bayesian attributed energy: "
             f"{accounting['attributed_posterior_mean_mj']:.3f} mJ"
         )
-    print(f"Baseline (b0) energy: {accounting['baseline_posterior_mean_mj']:.3f} mJ")
+    print(
+        "Baseline (b0) energy: "
+        f"{accounting['baseline_posterior_mean_mj']:.3f} mJ"
+    )
     if detailed:
-        print(f"Unassigned energy: {accounting['unassigned_dynamic_energy_mj']:.3f} mJ")
+        print(
+            "Unassigned energy: "
+            f"{accounting['unassigned_dynamic_energy_mj']:.3f} mJ"
+        )
     print(f"Conservation error: {accounting['conservation_error_mj']:.6g} mJ")
 
 
@@ -116,7 +134,10 @@ def print_cross_gpu_report(result):
         f"{target} explicit-family duration coverage: "
         f"{100.0 * summary['v100_explicit_family_duration_coverage']:.2f}%"
     )
-    for method, label in (("zero_shot", "Zero-shot"), ("calibrated", "Calibrated")):
+    for method, label in (
+        ("zero_shot", "Zero-shot"),
+        ("calibrated", "Calibrated"),
+    ):
         metrics = result.metrics[method]
         r_squared = metrics["r_squared"]
         r_label = "undefined" if r_squared is None else f"{r_squared:.4f}"
@@ -124,7 +145,10 @@ def print_cross_gpu_report(result):
             f"{label}: RMSE={metrics['rmse_w']:.3f} W, R-squared={r_label}, "
             f"95% coverage={100.0 * result.coverage[method]:.1f}%"
         )
-    print(f"Conservation error: {result.accounting['conservation_error_mj']:.6g} mJ")
+    print(
+        "Conservation error: "
+        f"{result.accounting['conservation_error_mj']:.6g} mJ"
+    )
     log_identifiability_warnings(result.identifiability, short_kernel_name)
     print(f"Results: {result.config.output_dir}")
 

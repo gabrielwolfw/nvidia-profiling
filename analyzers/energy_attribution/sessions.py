@@ -94,7 +94,9 @@ def scan_sessions(session_inputs, max_families):
                 load_kernels(session.kernels), max_families=2
             )
         except ValueError as error:
-            excluded_sessions.append({"session": session.name, "reason": str(error)})
+            excluded_sessions.append(
+                {"session": session.name, "reason": str(error)}
+            )
             logger.info("Skipping %s: %s", session.name, error)
             continue
         duration_by_name.update(session.scan.duration_by_name)
@@ -114,7 +116,9 @@ def scan_sessions(session_inputs, max_families):
     )
 
 
-def build_session_windows(session, selected, family_index, window_ns, idle_power_mw):
+def build_session_windows(
+    session, selected, family_index, window_ns, idle_power_mw
+):
     """Aggregate one scanned session; releases its KernelTable afterwards."""
     name, scan = session.name, session.scan
     logger.info("\n=== Aggregating %s ===", name)
@@ -134,7 +138,11 @@ def build_session_windows(session, selected, family_index, window_ns, idle_power
     )
     del table
     rows, target_power_w = build_windows(
-        trace, union_active_ns, analysis_start, analysis_end, window_ns,
+        trace,
+        union_active_ns,
+        analysis_start,
+        analysis_end,
+        window_ns,
         idle_power_mw,
     )
     for index, row in enumerate(rows):

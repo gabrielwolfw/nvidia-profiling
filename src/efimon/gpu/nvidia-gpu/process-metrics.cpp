@@ -1,27 +1,34 @@
+/**
+ * @file process-metrics.cpp
+ * @brief Preloaded collector for NVML telemetry and CUPTI kernel activity
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#include <cuda.h>
+#include <cupti.h>
+#include <fcntl.h>
+#include <nvml.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cinttypes>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <cstring>
 #include <exception>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <fstream>
-#include <fcntl.h>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
-
-#include <cupti.h>
-#include <cuda.h>
-#include <nvml.h>
-
 
 struct KernelEvent {
   uint64_t start;
@@ -72,8 +79,7 @@ static std::atomic<bool> activity_allocation_error_reported{false};
 constexpr char PROFILER_COMPLETION_SUCCESS = '0';
 constexpr char PROFILER_COMPLETION_FAILURE = '1';
 
-constexpr auto METRICS_SAMPLE_INTERVAL =
-    std::chrono::milliseconds(50);
+constexpr auto METRICS_SAMPLE_INTERVAL = std::chrono::milliseconds(50);
 
 constexpr int DEFAULT_METRICS_WINDOW_MS = 200;
 static std::chrono::milliseconds metrics_window_duration(
@@ -83,19 +89,16 @@ constexpr size_t BUFFER_SIZE = 1024 * 1024;
 constexpr size_t KERNELS_RESERVE_SIZE = 16384;
 constexpr size_t TELEMETRY_RESERVE_SIZE = 512;
 
-
 static void ProfilerStop();
-
 
 static void InitializeCompletionChannel() {
   profiler_owner_pid = getpid();
   const char* configured = std::getenv("NVIDIA_METRICS_COMPLETION_FD");
-  if (configured == nullptr || configured[0] == '\0')
-    return;
+  if (configured == nullptr || configured[0] == '\0') return;
 
   char* end = nullptr;
   errno = 0;
-  const long parsed = std::strtol(configured, &end, 10);
+  const int64_t parsed = std::strtoll(configured, &end, 10);
   unsetenv("NVIDIA_METRICS_COMPLETION_FD");
   if (errno != 0 || end == configured || *end != '\0' || parsed < 0 ||
       parsed > std::numeric_limits<int>::max()) {
@@ -107,17 +110,16 @@ static void InitializeCompletionChannel() {
   const int descriptor = static_cast<int>(parsed);
   const int flags = fcntl(descriptor, F_GETFD);
   if (flags < 0 || fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) != 0) {
-    std::fprintf(stderr, "[Profiler] Cannot configure completion descriptor: %s\n",
+    std::fprintf(stderr,
+                 "[Profiler] Cannot configure completion descriptor: %s\n",
                  std::strerror(errno));
     return;
   }
   profiler_completion_fd = descriptor;
 }
 
-
 static void ReportCompletion() {
-  if (profiler_completion_fd < 0 || getpid() != profiler_owner_pid)
-    return;
+  if (profiler_completion_fd < 0 || getpid() != profiler_owner_pid) return;
 
   const char status = profiler_failed.load(std::memory_order_acquire)
                           ? PROFILER_COMPLETION_FAILURE
@@ -134,10 +136,8 @@ static void ReportCompletion() {
   profiler_completion_fd = -1;
 }
 
-
 static bool GetConfiguredDeviceIndex(int* device_index) {
-  const char* configured =
-      std::getenv("NVIDIA_METRICS_DEVICE");
+  const char* configured = std::getenv("NVIDIA_METRICS_DEVICE");
 
   if (configured == nullptr || configured[0] == '\0') {
     *device_index = 0;
@@ -146,22 +146,18 @@ static bool GetConfiguredDeviceIndex(int* device_index) {
 
   char* end = nullptr;
   errno = 0;
-  const long parsed =
-      std::strtol(configured, &end, 10);
+  const int64_t parsed = std::strtoll(configured, &end, 10);
 
   if (errno != 0 || end == configured || *end != '\0' || parsed < 0 ||
       parsed > std::numeric_limits<int>::max()) {
-    std::fprintf(
-        stderr,
-        "[Profiler] Invalid NVIDIA_METRICS_DEVICE: %s\n",
-        configured);
+    std::fprintf(stderr, "[Profiler] Invalid NVIDIA_METRICS_DEVICE: %s\n",
+                 configured);
     return false;
   }
 
   *device_index = static_cast<int>(parsed);
   return true;
 }
-
 
 static void PrintCudaError(const char* operation, CUresult result) {
   const char* name = "CUDA_ERROR_UNKNOWN";
@@ -170,7 +166,6 @@ static void PrintCudaError(const char* operation, CUresult result) {
   cuGetErrorString(result, &message);
   std::fprintf(stderr, "[CUDA] %s: %s (%s)\n", operation, name, message);
 }
-
 
 static bool GetCudaPciBusId(int device_index, std::string* pci_bus_id) {
   CUresult result = cuInit(0);
@@ -197,31 +192,26 @@ static bool GetCudaPciBusId(int device_index, std::string* pci_bus_id) {
   return true;
 }
 
-
 static bool GetConfiguredWindowDuration(
     std::chrono::milliseconds* window_duration) {
-  const char* configured =
-      std::getenv("NVIDIA_METRICS_WINDOW_MS");
+  const char* configured = std::getenv("NVIDIA_METRICS_WINDOW_MS");
 
   if (configured == nullptr || configured[0] == '\0') {
-    *window_duration =
-        std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
+    *window_duration = std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
     return true;
   }
 
   char* end = nullptr;
   errno = 0;
-  const long parsed = std::strtol(configured, &end, 10);
+  const int64_t parsed = std::strtoll(configured, &end, 10);
 
   if (errno != 0 || end == configured || *end != '\0' || parsed <= 0 ||
       parsed > std::numeric_limits<int>::max()) {
     std::fprintf(
         stderr,
         "[Profiler] Invalid NVIDIA_METRICS_WINDOW_MS: %s; using %d ms\n",
-        configured,
-        DEFAULT_METRICS_WINDOW_MS);
-    *window_duration =
-        std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
+        configured, DEFAULT_METRICS_WINDOW_MS);
+    *window_duration = std::chrono::milliseconds(DEFAULT_METRICS_WINDOW_MS);
     return false;
   }
 
@@ -229,24 +219,19 @@ static bool GetConfiguredWindowDuration(
   return true;
 }
 
-
 static std::filesystem::path GetOutputDirectory() {
-  const char* configured =
-      std::getenv("NVIDIA_METRICS_OUTPUT_DIR");
+  const char* configured = std::getenv("NVIDIA_METRICS_OUTPUT_DIR");
 
-  if (configured != nullptr && configured[0] != '\0')
-    return configured;
+  if (configured != nullptr && configured[0] != '\0') return configured;
 
   return ".";
 }
-
 
 static std::string EscapeCsv(const std::string& value) {
   std::string escaped = "\"";
 
   for (const char character : value) {
-    if (character == '\"')
-      escaped += '\"';
+    if (character == '\"') escaped += '\"';
     escaped += character;
   }
 
@@ -254,80 +239,61 @@ static std::string EscapeCsv(const std::string& value) {
   return escaped;
 }
 
-
-static void PrintCuptiError(
-    const char* operation,
-    CUptiResult result) {
+static void PrintCuptiError(const char* operation, CUptiResult result) {
   const char* message = "unknown CUPTI error";
   cuptiGetResultString(result, &message);
   std::fprintf(stderr, "[CUPTI] %s: %s\n", operation, message);
 }
 
-
 static bool FinishCsvFile(std::ofstream* file,
                           const std::filesystem::path& path) {
   file->flush();
   if (!*file) {
-    std::fprintf(stderr, "[Profiler] Cannot write CSV file %s\n",
-                 path.c_str());
+    std::fprintf(stderr, "[Profiler] Cannot write CSV file %s\n", path.c_str());
     file->close();
     return false;
   }
   file->close();
   if (!*file) {
-    std::fprintf(stderr, "[Profiler] Cannot close CSV file %s\n",
-                 path.c_str());
+    std::fprintf(stderr, "[Profiler] Cannot close CSV file %s\n", path.c_str());
     return false;
   }
   return true;
 }
 
-
 static bool SaveTimelineCsvFiles() {
-  const std::filesystem::path output_directory =
-      GetOutputDirectory();
+  const std::filesystem::path output_directory = GetOutputDirectory();
   std::error_code error;
-  std::filesystem::create_directories(
-      output_directory,
-      error);
+  std::filesystem::create_directories(output_directory, error);
 
   if (error) {
-    std::fprintf(
-        stderr,
-        "[Profiler] Cannot create output directory %s: %s\n",
-        output_directory.c_str(),
-        error.message().c_str());
+    std::fprintf(stderr, "[Profiler] Cannot create output directory %s: %s\n",
+                 output_directory.c_str(), error.message().c_str());
     return false;
   }
 
   bool success = true;
 
-  const auto telemetry_path =
-      output_directory / "gpu_telemetry.csv";
+  const auto telemetry_path = output_directory / "gpu_telemetry.csv";
   std::ofstream telemetry_file(telemetry_path);
   if (!telemetry_file.is_open()) {
     std::fprintf(stderr, "[Profiler] Cannot open CSV file %s\n",
                  telemetry_path.c_str());
     success = false;
   } else {
-    telemetry_file <<
-        "timestamp_ns,query_start_ns,query_end_ns,power_mw,temperature_c,"
-        "gpu_utilization_pct,"
-        "memory_utilization_pct,graphics_clock_mhz\n";
+    telemetry_file
+        << "timestamp_ns,query_start_ns,query_end_ns,power_mw,temperature_c,"
+           "gpu_utilization_pct,"
+           "memory_utilization_pct,graphics_clock_mhz\n";
 
     for (const auto& sample : telemetry_samples) {
-      telemetry_file
-          << sample.timestamp_ns << ','
-          << sample.query_start_ns << ','
-          << sample.query_end_ns << ',';
-      if (sample.power_mw)
-        telemetry_file << *sample.power_mw;
+      telemetry_file << sample.timestamp_ns << ',' << sample.query_start_ns
+                     << ',' << sample.query_end_ns << ',';
+      if (sample.power_mw) telemetry_file << *sample.power_mw;
       telemetry_file << ',';
-      if (sample.temperature_c)
-        telemetry_file << *sample.temperature_c;
+      if (sample.temperature_c) telemetry_file << *sample.temperature_c;
       telemetry_file << ',';
-      if (sample.gpu_utilization)
-        telemetry_file << *sample.gpu_utilization;
+      if (sample.gpu_utilization) telemetry_file << *sample.gpu_utilization;
       telemetry_file << ',';
       if (sample.memory_utilization)
         telemetry_file << *sample.memory_utilization;
@@ -336,56 +302,43 @@ static bool SaveTimelineCsvFiles() {
         telemetry_file << *sample.graphics_clock_mhz;
       telemetry_file << '\n';
     }
-    if (!FinishCsvFile(&telemetry_file, telemetry_path))
-      success = false;
+    if (!FinishCsvFile(&telemetry_file, telemetry_path)) success = false;
   }
 
-  const auto kernels_path =
-      output_directory / "kernel_activity.csv";
+  const auto kernels_path = output_directory / "kernel_activity.csv";
   std::ofstream kernels_file(kernels_path);
   if (!kernels_file.is_open()) {
     std::fprintf(stderr, "[Profiler] Cannot open CSV file %s\n",
                  kernels_path.c_str());
     success = false;
   } else {
-    kernels_file <<
-        "event_id,pid,device_id,context_id,stream_id,correlation_id,"
-        "start_ns,end_ns,duration_ns,kernel_name\n";
+    kernels_file
+        << "event_id,pid,device_id,context_id,stream_id,correlation_id,"
+           "start_ns,end_ns,duration_ns,kernel_name\n";
 
     for (size_t index = 0; index < kernels.size(); ++index) {
       const auto& kernel = kernels[index];
-      kernels_file
-          << index << ','
-          << getpid() << ','
-          << kernel.device_id << ','
-          << kernel.context_id << ','
-          << kernel.stream_id << ','
-          << kernel.correlation_id << ','
-          << kernel.start << ','
-          << kernel.end << ','
-          << (kernel.end - kernel.start) << ','
-          << EscapeCsv(kernel.name) << '\n';
+      kernels_file << index << ',' << getpid() << ',' << kernel.device_id << ','
+                   << kernel.context_id << ',' << kernel.stream_id << ','
+                   << kernel.correlation_id << ',' << kernel.start << ','
+                   << kernel.end << ',' << (kernel.end - kernel.start) << ','
+                   << EscapeCsv(kernel.name) << '\n';
     }
-    if (!FinishCsvFile(&kernels_file, kernels_path))
-      success = false;
+    if (!FinishCsvFile(&kernels_file, kernels_path)) success = false;
   }
 
   if (success) {
-    std::printf(
-        "Timeline CSV: %s\nKernel CSV: %s\n",
-        telemetry_path.c_str(),
-        kernels_path.c_str());
+    std::printf("Timeline CSV: %s\nKernel CSV: %s\n", telemetry_path.c_str(),
+                kernels_path.c_str());
   }
   return success;
 }
-
 
 /* ------------------------------------------------ */
 /* Local NVML sampling                              */
 /* ------------------------------------------------ */
 
 void SampleGpuMetrics() {
-
   bool timestamp_error_reported = false;
   bool power_error_reported = false;
   bool temperature_error_reported = false;
@@ -393,7 +346,6 @@ void SampleGpuMetrics() {
   bool clock_error_reported = false;
 
   while (true) {
-
     unsigned int power_mw = 0;
     unsigned int temperature_c = 0;
     unsigned int graphics_clock_mhz = 0;
@@ -403,34 +355,21 @@ void SampleGpuMetrics() {
     uint64_t query_end_ns = 0;
 
     const CUptiResult timestamp_start_result =
-        cuptiGetTimestamp(
-            &query_start_ns);
+        cuptiGetTimestamp(&query_start_ns);
 
     const nvmlReturn_t power_result =
-        nvmlDeviceGetPowerUsage(
-            device,
-            &power_mw);
+        nvmlDeviceGetPowerUsage(device, &power_mw);
 
     const nvmlReturn_t temperature_result =
-        nvmlDeviceGetTemperature(
-            device,
-            NVML_TEMPERATURE_GPU,
-            &temperature_c);
+        nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature_c);
 
     const nvmlReturn_t utilization_result =
-        nvmlDeviceGetUtilizationRates(
-            device,
-            &utilization);
+        nvmlDeviceGetUtilizationRates(device, &utilization);
 
-    const nvmlReturn_t clock_result =
-        nvmlDeviceGetClockInfo(
-            device,
-            NVML_CLOCK_GRAPHICS,
-            &graphics_clock_mhz);
+    const nvmlReturn_t clock_result = nvmlDeviceGetClockInfo(
+        device, NVML_CLOCK_GRAPHICS, &graphics_clock_mhz);
 
-    const CUptiResult timestamp_end_result =
-        cuptiGetTimestamp(
-            &query_end_ns);
+    const CUptiResult timestamp_end_result = cuptiGetTimestamp(&query_end_ns);
 
     if (power_result != NVML_SUCCESS && !power_error_reported) {
       std::fprintf(stderr, "[NVML] Cannot sample power: %s\n",
@@ -455,31 +394,25 @@ void SampleGpuMetrics() {
 
     if (timestamp_start_result == CUPTI_SUCCESS &&
         timestamp_end_result == CUPTI_SUCCESS) {
-
       const uint64_t timestamp_ns =
-          query_start_ns +
-          (query_end_ns - query_start_ns) / 2;
+          query_start_ns + (query_end_ns - query_start_ns) / 2;
 
-      telemetry_samples.push_back({
-          timestamp_ns,
-          query_start_ns,
-          query_end_ns,
-          power_result == NVML_SUCCESS
-              ? std::optional<unsigned int>(power_mw)
-              : std::nullopt,
-          temperature_result == NVML_SUCCESS
-              ? std::optional<unsigned int>(temperature_c)
-              : std::nullopt,
-          utilization_result == NVML_SUCCESS
-              ? std::optional<unsigned int>(utilization.gpu)
-              : std::nullopt,
-          utilization_result == NVML_SUCCESS
-              ? std::optional<unsigned int>(utilization.memory)
-              : std::nullopt,
-          clock_result == NVML_SUCCESS
-              ? std::optional<unsigned int>(graphics_clock_mhz)
-              : std::nullopt
-      });
+      telemetry_samples.push_back(
+          {timestamp_ns, query_start_ns, query_end_ns,
+           power_result == NVML_SUCCESS ? std::optional<unsigned int>(power_mw)
+                                        : std::nullopt,
+           temperature_result == NVML_SUCCESS
+               ? std::optional<unsigned int>(temperature_c)
+               : std::nullopt,
+           utilization_result == NVML_SUCCESS
+               ? std::optional<unsigned int>(utilization.gpu)
+               : std::nullopt,
+           utilization_result == NVML_SUCCESS
+               ? std::optional<unsigned int>(utilization.memory)
+               : std::nullopt,
+           clock_result == NVML_SUCCESS
+               ? std::optional<unsigned int>(graphics_clock_mhz)
+               : std::nullopt});
 
     } else if (!timestamp_error_reported) {
       if (timestamp_start_result != CUPTI_SUCCESS)
@@ -492,78 +425,51 @@ void SampleGpuMetrics() {
     }
 
     // Take one final sample after the stop request to bracket the tail.
-    if (!metrics_sampling.load(std::memory_order_acquire))
-      break;
+    if (!metrics_sampling.load(std::memory_order_acquire)) break;
 
-    std::this_thread::sleep_for(
-        METRICS_SAMPLE_INTERVAL);
+    std::this_thread::sleep_for(METRICS_SAMPLE_INTERVAL);
   }
 }
-
 
 void StartGpuMetricsSampling() {
-
-  if (!nvml_initialized ||
-      metrics_thread != nullptr) {
+  if (!nvml_initialized || metrics_thread != nullptr) {
     return;
   }
 
-  metrics_sampling.store(
-      true,
-      std::memory_order_release);
+  metrics_sampling.store(true, std::memory_order_release);
 
   try {
-
-    metrics_thread =
-        new std::thread(
-            SampleGpuMetrics);
-
+    metrics_thread = new std::thread(SampleGpuMetrics);
   } catch (const std::exception& error) {
+    metrics_sampling.store(false, std::memory_order_release);
 
-    metrics_sampling.store(
-        false,
-        std::memory_order_release);
-
-    std::fprintf(
-        stderr,
-        "[NVML] Failed to start local sampling: %s\n",
-        error.what());
+    std::fprintf(stderr, "[NVML] Failed to start local sampling: %s\n",
+                 error.what());
   }
 }
 
-
 void StopGpuMetricsSampling() {
+  metrics_sampling.store(false, std::memory_order_release);
 
-  metrics_sampling.store(
-      false,
-      std::memory_order_release);
+  if (metrics_thread == nullptr) return;
 
-  if (metrics_thread == nullptr)
-    return;
-
-  if (metrics_thread->joinable())
-    metrics_thread->join();
+  if (metrics_thread->joinable()) metrics_thread->join();
 
   delete metrics_thread;
   metrics_thread = nullptr;
 }
 
-
 /* ------------------------------------------------ */
 /* CUPTI buffer                                     */
 /* ------------------------------------------------ */
 
-void CUPTIAPI BufferRequested(
-    uint8_t** buffer,
-    size_t* size,
-    size_t* max_records) {
-
+void CUPTIAPI BufferRequested(uint8_t** buffer, size_t* size,
+                              size_t* max_records) {
   *buffer = nullptr;
   *size = 0;
   *max_records = 0;
 
-  uint8_t* requested_buffer =
-      static_cast<uint8_t*>(std::malloc(BUFFER_SIZE));
+  uint8_t* requested_buffer = static_cast<uint8_t*>(std::malloc(BUFFER_SIZE));
   if (requested_buffer == nullptr) {
     profiler_failed.store(true, std::memory_order_release);
     if (!activity_allocation_error_reported.exchange(
@@ -579,30 +485,18 @@ void CUPTIAPI BufferRequested(
   *size = BUFFER_SIZE;
 }
 
-
 /* ------------------------------------------------ */
 /* CUPTI records                                    */
 /* ------------------------------------------------ */
 
-void CUPTIAPI BufferCompleted(
-    CUcontext context,
-    uint32_t stream_id,
-    uint8_t* buffer,
-    size_t,
-    size_t valid_size) {
-
+void CUPTIAPI BufferCompleted(CUcontext context, uint32_t stream_id,
+                              uint8_t* buffer, size_t, size_t valid_size) {
   CUpti_Activity* record = nullptr;
 
   while (CUPTI_SUCCESS ==
-         cuptiActivityGetNextRecord(
-             buffer,
-             valid_size,
-             &record)) {
-
+         cuptiActivityGetNextRecord(buffer, valid_size, &record)) {
     /* Kernel */
-    if (record->kind ==
-        CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
-
+    if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
       auto* kernel =
 #if CUPTI_API_VERSION <= 26
           reinterpret_cast<CUpti_ActivityKernel9*>(
@@ -612,30 +506,18 @@ void CUPTIAPI BufferCompleted(
               record);
 
       std::lock_guard<std::mutex> lock(activity_mutex);
-      kernels.push_back({
-          kernel->start,
-          kernel->end,
-          kernel->deviceId,
-          kernel->contextId,
-          kernel->streamId,
-          kernel->correlationId,
-          kernel->name != nullptr ? kernel->name : "unknown"
-      });
-
+      kernels.push_back({kernel->start, kernel->end, kernel->deviceId,
+                         kernel->contextId, kernel->streamId,
+                         kernel->correlationId,
+                         kernel->name != nullptr ? kernel->name : "unknown"});
     }
 
-
     /* Memory copies */
-    if (record->kind ==
-        CUPTI_ACTIVITY_KIND_MEMCPY) {
-
-      auto* copy =
-          reinterpret_cast<CUpti_ActivityMemcpy*>(
-              record);
+    if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
+      auto* copy = reinterpret_cast<CUpti_ActivityMemcpy*>(record);
 
       std::lock_guard<std::mutex> lock(activity_mutex);
       switch (copy->copyKind) {
-
         case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
           bytes_h2d += copy->bytes;
           break;
@@ -656,75 +538,51 @@ void CUPTIAPI BufferCompleted(
 
   size_t dropped = 0;
   const CUptiResult dropped_result =
-      cuptiActivityGetNumDroppedRecords(
-          context,
-          stream_id,
-          &dropped);
+      cuptiActivityGetNumDroppedRecords(context, stream_id, &dropped);
 
   if (dropped_result == CUPTI_SUCCESS) {
-    dropped_activity_records.fetch_add(
-        dropped,
-        std::memory_order_relaxed);
+    dropped_activity_records.fetch_add(dropped, std::memory_order_relaxed);
   } else if (!dropped_records_query_failed.exchange(
-                 true,
-                 std::memory_order_relaxed)) {
-    PrintCuptiError(
-        "Failed to query dropped activity records",
-        dropped_result);
+                 true, std::memory_order_relaxed)) {
+    PrintCuptiError("Failed to query dropped activity records", dropped_result);
   }
 
   std::free(buffer);
 }
-
 
 /* ------------------------------------------------ */
 /* NVML process memory                              */
 /* ------------------------------------------------ */
 
 uint64_t GetProcessMemory(pid_t pid) {
-
-  if (!nvml_initialized)
-    return 0;
+  if (!nvml_initialized) return 0;
 
   unsigned int count = 0;
 
   nvmlReturn_t res =
-      nvmlDeviceGetComputeRunningProcesses_v3(
-          device,
-          &count,
-          nullptr);
+      nvmlDeviceGetComputeRunningProcesses_v3(device, &count, nullptr);
 
-  if (NVML_ERROR_INSUFFICIENT_SIZE != res &&
-      NVML_SUCCESS != res) {
+  if (NVML_ERROR_INSUFFICIENT_SIZE != res && NVML_SUCCESS != res) {
     return 0;
   }
 
-  if (count == 0)
-    return 0;
+  if (count == 0) return 0;
 
   std::vector<nvmlProcessInfo_t> processes(count);
 
   res =
-      nvmlDeviceGetComputeRunningProcesses_v3(
-          device,
-          &count,
-          processes.data());
+      nvmlDeviceGetComputeRunningProcesses_v3(device, &count, processes.data());
 
-  if (NVML_SUCCESS != res)
-    return 0;
+  if (NVML_SUCCESS != res) return 0;
 
   for (const auto& process : processes) {
-
-    if (process.pid ==
-        static_cast<unsigned int>(pid)) {
-
+    if (process.pid == static_cast<unsigned int>(pid)) {
       return process.usedGpuMemory;
     }
   }
 
   return 0;
 }
-
 
 /* ------------------------------------------------ */
 /* Active kernel time inside window                 */
@@ -735,8 +593,7 @@ static std::vector<ActiveKernelInterval> MergeActiveKernelIntervals() {
   intervals.reserve(kernels.size());
 
   for (const auto& kernel : kernels) {
-    if (kernel.start >= kernel.end)
-      continue;
+    if (kernel.start >= kernel.end) continue;
 
     if (intervals.empty() || kernel.start > intervals.back().end) {
       intervals.push_back({kernel.start, kernel.end});
@@ -749,13 +606,9 @@ static std::vector<ActiveKernelInterval> MergeActiveKernelIntervals() {
   return intervals;
 }
 
-
 static uint64_t GetActiveKernelTimeInWindow(
-    const std::vector<ActiveKernelInterval>& intervals,
-    size_t& interval_index,
-    uint64_t window_start,
-    uint64_t window_end) {
-
+    const std::vector<ActiveKernelInterval>& intervals, size_t& interval_index,
+    uint64_t window_start, uint64_t window_end) {
   uint64_t total = 0;
   while (interval_index < intervals.size() &&
          intervals[interval_index].end <= window_start) {
@@ -766,12 +619,10 @@ static uint64_t GetActiveKernelTimeInWindow(
   while (index < intervals.size() && intervals[index].start < window_end) {
     const uint64_t overlap_start =
         std::max(intervals[index].start, window_start);
-    const uint64_t overlap_end =
-        std::min(intervals[index].end, window_end);
+    const uint64_t overlap_end = std::min(intervals[index].end, window_end);
     total += overlap_end - overlap_start;
 
-    if (intervals[index].end > window_end)
-      break;
+    if (intervals[index].end > window_end) break;
 
     ++index;
     interval_index = index;
@@ -780,30 +631,23 @@ static uint64_t GetActiveKernelTimeInWindow(
   return total;
 }
 
-
 /* ------------------------------------------------ */
 /* Library loaded                                   */
 /* ------------------------------------------------ */
 
 static void ProfilerStart() {
-
   InitializeCompletionChannel();
 
-  std::printf(
-      "\n=== NVIDIA Process Profiler ===\n");
+  std::printf("\n=== NVIDIA Process Profiler ===\n");
 
-  std::printf(
-      "PID: %d\n",
-      getpid());
+  std::printf("PID: %d\n", getpid());
 
   kernels.reserve(KERNELS_RESERVE_SIZE);
   telemetry_samples.reserve(TELEMETRY_RESERVE_SIZE);
 
   GetConfiguredWindowDuration(&metrics_window_duration);
-  std::printf(
-      "Kernel window: %lld ms\n",
-      static_cast<long long>(metrics_window_duration.count()));
-
+  std::printf("Kernel window: %" PRId64 " ms\n",
+              static_cast<int64_t>(metrics_window_duration.count()));
 
   /* NVML */
 
@@ -819,15 +663,12 @@ static void ProfilerStart() {
 
         if (NVML_SUCCESS == res) {
           nvml_initialized = true;
-          std::printf("CUDA device: %d; NVML PCI device: %s\n",
-                      device_index, pci_bus_id.c_str());
+          std::printf("CUDA device: %d; NVML PCI device: %s\n", device_index,
+                      pci_bus_id.c_str());
         } else {
-          std::fprintf(
-              stderr,
-              "[NVML] Cannot match CUDA device %d at PCI bus %s: %s\n",
-              device_index,
-              pci_bus_id.c_str(),
-              nvmlErrorString(res));
+          std::fprintf(stderr,
+                       "[NVML] Cannot match CUDA device %d at PCI bus %s: %s\n",
+                       device_index, pci_bus_id.c_str(), nvmlErrorString(res));
           nvmlShutdown();
         }
       } else {
@@ -837,72 +678,52 @@ static void ProfilerStart() {
     }
   }
 
-
   /* CUPTI */
 
   CUptiResult cupti_result =
-      cuptiActivityRegisterCallbacks(
-          BufferRequested,
-          BufferCompleted);
+      cuptiActivityRegisterCallbacks(BufferRequested, BufferCompleted);
 
   if (CUPTI_SUCCESS != cupti_result) {
-
-    std::fprintf(
-        stderr,
-        "[CUPTI] Failed to register callbacks\n");
+    std::fprintf(stderr, "[CUPTI] Failed to register callbacks\n");
 
     profiler_failed = true;
     return;
   }
 
-
-  cupti_result = cuptiActivityEnable(
-      CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+  cupti_result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
 
   if (CUPTI_SUCCESS != cupti_result) {
-    PrintCuptiError(
-        "Failed to enable concurrent kernel activity",
-        cupti_result);
+    PrintCuptiError("Failed to enable concurrent kernel activity",
+                    cupti_result);
     profiler_failed = true;
     return;
   }
 
-  cupti_result = cuptiActivityEnable(
-      CUPTI_ACTIVITY_KIND_MEMCPY);
+  cupti_result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
 
   if (CUPTI_SUCCESS != cupti_result) {
-    PrintCuptiError(
-        "Failed to enable memory copy activity",
-        cupti_result);
+    PrintCuptiError("Failed to enable memory copy activity", cupti_result);
     profiler_failed = true;
     return;
   }
 
-
-  std::printf(
-      "\n--- Live GPU telemetry ---\n");
+  std::printf("\n--- Live GPU telemetry ---\n");
 
   StartGpuMetricsSampling();
 }
-
 
 /* ------------------------------------------------ */
 /* Profiler shutdown                                */
 /* ------------------------------------------------ */
 
 static void ProfilerStop() {
-
-  if (profiler_owner_pid >= 0 && getpid() != profiler_owner_pid)
-    return;
+  if (profiler_owner_pid >= 0 && getpid() != profiler_owner_pid) return;
 
   const CUptiResult flush_result =
-      cuptiActivityFlushAll(
-          CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+      cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
   if (flush_result != CUPTI_SUCCESS) {
-    PrintCuptiError(
-        "Failed to flush activity records",
-        flush_result);
+    PrintCuptiError("Failed to flush activity records", flush_result);
     profiler_failed = true;
   }
 
@@ -912,228 +733,135 @@ static void ProfilerStop() {
 
   StopGpuMetricsSampling();
 
-  std::sort(
-      kernels.begin(),
-      kernels.end(),
-      [](const KernelEvent& left,
-         const KernelEvent& right) {
-        return left.start < right.start;
-      });
+  std::sort(kernels.begin(), kernels.end(),
+            [](const KernelEvent& left, const KernelEvent& right) {
+              return left.start < right.start;
+            });
 
-  if (!SaveTimelineCsvFiles())
-    profiler_failed = true;
+  if (!SaveTimelineCsvFiles()) profiler_failed = true;
 
+  const uint64_t memory_bytes = GetProcessMemory(getpid());
 
-  const uint64_t memory_bytes =
-      GetProcessMemory(
-          getpid());
+  std::printf("\n--- Process Summary ---\n");
 
+  std::printf("PID: %d\n", getpid());
 
-  std::printf(
-      "\n--- Process Summary ---\n");
-
-  std::printf(
-      "PID: %d\n",
-      getpid());
-
-  std::printf(
-      "Kernels total: %zu\n",
-      kernels.size());
+  std::printf("Kernels total: %zu\n", kernels.size());
 
   const size_t dropped =
-      dropped_activity_records.load(
-          std::memory_order_relaxed);
+      dropped_activity_records.load(std::memory_order_relaxed);
 
   if (dropped > 0) {
-    std::fprintf(
-        stderr,
-        "[CUPTI] WARNING: %zu activity records were dropped\n",
-        dropped);
+    std::fprintf(stderr, "[CUPTI] WARNING: %zu activity records were dropped\n",
+                 dropped);
   }
 
-  std::printf(
-      "GPU memory: %.2f MB\n",
-      memory_bytes /
-          (1024.0 * 1024.0));
-
+  std::printf("GPU memory: %.2f MB\n", memory_bytes / (1024.0 * 1024.0));
 
   /* ---------------------------------------------- */
   /* Configurable kernel windows                    */
   /* ---------------------------------------------- */
 
   if (!kernels.empty()) {
-
     const std::vector<ActiveKernelInterval> active_kernel_intervals =
         MergeActiveKernelIntervals();
 
-    const uint64_t window_size_ns =
-        static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                metrics_window_duration).count());
+    const uint64_t window_size_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            metrics_window_duration)
+            .count());
 
+    uint64_t first_kernel_ns = kernels[0].start;
 
-    uint64_t first_kernel_ns =
-        kernels[0].start;
-
-    uint64_t last_kernel_ns =
-        kernels[0].end;
-
+    uint64_t last_kernel_ns = kernels[0].end;
 
     for (const auto& kernel : kernels) {
+      first_kernel_ns = std::min(first_kernel_ns, kernel.start);
 
-      first_kernel_ns =
-          std::min(
-              first_kernel_ns,
-              kernel.start);
-
-      last_kernel_ns =
-          std::max(
-              last_kernel_ns,
-              kernel.end);
+      last_kernel_ns = std::max(last_kernel_ns, kernel.end);
     }
 
-
-    std::printf(
-        "\n--- %lld ms Kernel Windows ---\n",
-        static_cast<long long>(metrics_window_duration.count()));
-
+    std::printf("\n--- %" PRId64 " ms Kernel Windows ---\n",
+                static_cast<int64_t>(metrics_window_duration.count()));
 
     uint64_t window_number = 0;
     size_t active_interval_index = 0;
 
-
-    for (uint64_t window_start =
-             first_kernel_ns;
-         window_start < last_kernel_ns;
+    for (uint64_t window_start = first_kernel_ns; window_start < last_kernel_ns;
          window_start += window_size_ns) {
+      uint64_t window_end = window_start + window_size_ns;
 
+      const uint64_t current_window_ns = window_end - window_start;
 
-      uint64_t window_end =
-          window_start +
-          window_size_ns;
-
-
-      const uint64_t current_window_ns =
-          window_end -
-          window_start;
-
-
-      const uint64_t active_ns =
-          GetActiveKernelTimeInWindow(
-              active_kernel_intervals,
-              active_interval_index,
-              window_start,
-              window_end);
-
+      const uint64_t active_ns = GetActiveKernelTimeInWindow(
+          active_kernel_intervals, active_interval_index, window_start,
+          window_end);
 
       double utilization = 0.0;
 
       if (current_window_ns > 0) {
-
-        utilization =
-            static_cast<double>(
-                active_ns) /
-            static_cast<double>(
-                current_window_ns) *
-            100.0;
+        utilization = static_cast<double>(active_ns) /
+                      static_cast<double>(current_window_ns) * 100.0;
       }
 
+      const double relative_start_ms = (window_start - first_kernel_ns) / 1e6;
 
-      const double relative_start_ms =
-          (window_start -
-           first_kernel_ns) /
-          1e6;
+      const double relative_end_ms = (window_end - first_kernel_ns) / 1e6;
 
+      std::printf("Window %" PRIu64
+                  " [%.0f-%.0f ms] | "
+                  "Active: %.3f ms | "
+                  "Utilization: %.2f %%\n",
 
-      const double relative_end_ms =
-          (window_end -
-           first_kernel_ns) /
-          1e6;
+                  window_number,
 
+                  relative_start_ms,
 
-      std::printf(
-          "Window %llu "
-          "[%.0f-%.0f ms] | "
-          "Active: %.3f ms | "
-          "Utilization: %.2f %%\n",
+                  relative_end_ms,
 
-          static_cast<unsigned long long>(
-              window_number),
+                  active_ns / 1e6,
 
-          relative_start_ms,
-
-          relative_end_ms,
-
-          active_ns / 1e6,
-
-          utilization);
-
+                  utilization);
 
       ++window_number;
     }
+  } else {
+    std::printf("\nNo kernels captured\n");
   }
-
-  else {
-
-    std::printf(
-        "\nNo kernels captured\n");
-  }
-
 
   /* ---------------------------------------------- */
   /* Memory copies                                  */
   /* ---------------------------------------------- */
 
-  std::printf(
-      "\n--- Memory copies ---\n");
+  std::printf("\n--- Memory copies ---\n");
 
-  std::printf(
-      "H2D: %.2f MB\n",
-      bytes_h2d /
-          (1024.0 * 1024.0));
+  std::printf("H2D: %.2f MB\n", bytes_h2d / (1024.0 * 1024.0));
 
-  std::printf(
-      "D2H: %.2f MB\n",
-      bytes_d2h /
-          (1024.0 * 1024.0));
+  std::printf("D2H: %.2f MB\n", bytes_d2h / (1024.0 * 1024.0));
 
-  std::printf(
-      "D2D: %.2f MB\n",
-      bytes_d2d /
-          (1024.0 * 1024.0));
+  std::printf("D2D: %.2f MB\n", bytes_d2d / (1024.0 * 1024.0));
 
+  if (nvml_initialized) nvmlShutdown();
 
-  if (nvml_initialized)
-    nvmlShutdown();
-
-
-  std::printf(
-      "=======================\n");
+  std::printf("=======================\n");
 
   ReportCompletion();
 }
 
-
 class ProfilerLifecycle {
  public:
-  ProfilerLifecycle() {
-    ProfilerStart();
-  }
+  ProfilerLifecycle() { ProfilerStart(); }
 
-  ~ProfilerLifecycle() {
-    ProfilerStop();
-  }
+  ~ProfilerLifecycle() { ProfilerStop(); }
 
   ProfilerLifecycle(const ProfilerLifecycle&) = delete;
   ProfilerLifecycle& operator=(const ProfilerLifecycle&) = delete;
 };
 
-
 // This object must remain after the profiler state declarations in this
 // translation unit. C++ destroys it first, ensuring ProfilerStop() joins the
 // sampling thread before the vectors and synchronization objects are destroyed.
 static ProfilerLifecycle profiler_lifecycle;
-
 
 /* g++ -std=c++17 -fPIC -shared \
   nvidia-process-metrics.cpp \
@@ -1147,9 +875,7 @@ static ProfilerLifecycle profiler_lifecycle;
   -pthread \
   -o libnvidia-process-metrics.so */
 
-
 // LD_PRELOAD=$PWD/libnvidia-process-metrics.so python gpu-regression.py
-
 
 /* LD_PRELOAD=$PWD/nvidia/libnvidia-process-metrics.so \
 ./benchmarks/build/bench_compute \

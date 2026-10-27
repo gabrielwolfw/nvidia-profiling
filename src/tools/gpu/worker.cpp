@@ -1,18 +1,27 @@
-#include "worker.hpp"
+/**
+ * @file worker.cpp
+ * @brief Per-session worker that supervises a profiled workload
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#include "gpu/worker.hpp"  // NOLINT
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
-#include <cerrno>
-#include <cstdio>
-#include <cstring>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <string>
 #include <thread>
+#include <utility>
 
 namespace nvidia_process_metrics {
 namespace {
@@ -24,9 +33,7 @@ constexpr auto kSamplerKillTimeout = std::chrono::seconds(2);
 constexpr uint64_t kSamplerSamplingInterval = 1'000'000;
 std::mutex sampler_fork_mutex;
 
-bool ProcessExists(pid_t pid) {
-  return kill(pid, 0) == 0 || errno == EPERM;
-}
+bool ProcessExists(pid_t pid) { return kill(pid, 0) == 0 || errno == EPERM; }
 
 enum class ChildWaitResult { kExited, kTimedOut, kError };
 
@@ -59,8 +66,8 @@ ChildWaitResult WaitForChild(pid_t pid,
       return ChildWaitResult::kExited;
     }
     if (waited < 0 && errno != EINTR) {
-      *error = std::string("cannot wait for PM sampler: ") +
-               std::strerror(errno);
+      *error =
+          std::string("cannot wait for PM sampler: ") + std::strerror(errno);
       return ChildWaitResult::kError;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
@@ -103,7 +110,8 @@ SamplerStopResult StopSamplerProcess(pid_t pid) {
     return {false, wait_error};
   }
 
-  std::fprintf(stderr, "PM sampler %d did not stop after SIGINT; sending SIGTERM\n",
+  std::fprintf(stderr,
+               "PM sampler %d did not stop after SIGINT; sending SIGTERM\n",
                pid);
   SignalChild(pid, SIGTERM);
   waited = WaitForChild(pid, kSamplerTerminateTimeout, &status, &wait_error);
@@ -115,7 +123,8 @@ SamplerStopResult StopSamplerProcess(pid_t pid) {
     return {false, wait_error};
   }
 
-  std::fprintf(stderr, "PM sampler %d did not stop after SIGTERM; sending SIGKILL\n",
+  std::fprintf(stderr,
+               "PM sampler %d did not stop after SIGTERM; sending SIGKILL\n",
                pid);
   SignalChild(pid, SIGKILL);
   waited = WaitForChild(pid, kSamplerKillTimeout, &status, &wait_error);
@@ -126,9 +135,10 @@ SamplerStopResult StopSamplerProcess(pid_t pid) {
     return {false, wait_error};
   }
   if (waited == ChildWaitResult::kTimedOut) {
-    std::fprintf(stderr,
-                 "PM sampler %d could not be reaped promptly; reaping asynchronously\n",
-                 pid);
+    std::fprintf(
+        stderr,
+        "PM sampler %d could not be reaped promptly; reaping asynchronously\n",
+        pid);
     ReapChildInBackground(pid);
   }
   return {false, "PM sampler did not terminate within the shutdown deadline"};
@@ -206,13 +216,12 @@ bool NvidiaProcessMetricsWorker::Start(std::string* error) {
     return false;
   }
 
-  SetState(SessionState::kRunning,
 #if NVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING
-           "running"
+  constexpr const char* kRunningDetail = "running";
 #else
-           "running_without_pm_sampling"
+  constexpr const char* kRunningDetail = "running_without_pm_sampling";
 #endif
-  );
+  SetState(SessionState::kRunning, kRunningDetail);
   monitor_thread_ = std::thread(&NvidiaProcessMetricsWorker::Monitor, this);
   return true;
 }
@@ -262,8 +271,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
     return false;
   }
 
-  const int output_directory_fd =
-      open(output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int output_directory_fd = open(
+      output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (output_directory_fd < 0) {
     *error = std::string("cannot open sampler output directory: ") +
              std::strerror(errno);
@@ -274,8 +283,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
       openat(output_directory_fd, "pm_sampling.log",
              O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (log_fd < 0) {
-    *error = std::string("cannot create PM sampler log: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot create PM sampler log: ") + std::strerror(errno);
     close(output_directory_fd);
     return false;
   }
@@ -284,8 +293,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
       openat(output_directory_fd, "pm_sampling.csv",
              O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (samples_fd < 0) {
-    *error = std::string("cannot create PM sampler output: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot create PM sampler output: ") + std::strerror(errno);
     close(log_fd);
     close(output_directory_fd);
     return false;
@@ -298,8 +307,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
   const int inherited_samples_fd = fcntl(samples_fd, F_DUPFD, 64);
   close(samples_fd);
   if (inherited_samples_fd < 0) {
-    *error = std::string("cannot retain PM sampler output: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot retain PM sampler output: ") + std::strerror(errno);
     close(log_fd);
     close(output_directory_fd);
     return false;
@@ -322,8 +331,7 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
     return false;
   }
   if (sampler_pid_ == 0) {
-    if (fchdir(output_directory_fd) != 0 ||
-        dup2(log_fd, STDOUT_FILENO) < 0 ||
+    if (fchdir(output_directory_fd) != 0 || dup2(log_fd, STDOUT_FILENO) < 0 ||
         dup2(log_fd, STDERR_FILENO) < 0) {
       _exit(127);
     }
@@ -399,11 +407,12 @@ bool NvidiaProcessMetricsWorker::PollSamplerExit(std::string* error) {
 
 bool NvidiaProcessMetricsWorker::TransferOutputDirectoryOwnership(
     std::string* error) const {
-  const int directory_fd =
-      open(output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int directory_fd = open(
+      output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (directory_fd < 0) {
-    *error = std::string("cannot open output directory for ownership transfer: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot open output directory for ownership transfer: ") +
+        std::strerror(errno);
     return false;
   }
 
@@ -420,7 +429,8 @@ bool NvidiaProcessMetricsWorker::TransferOutputDirectoryOwnership(
 
 void NvidiaProcessMetricsWorker::Monitor() {
   const auto deadline = std::chrono::steady_clock::now() + max_duration_;
-  while (!stop_requested_.load() && std::chrono::steady_clock::now() < deadline) {
+  while (!stop_requested_.load() &&
+         std::chrono::steady_clock::now() < deadline) {
 #if NVIDIA_PROCESS_METRICS_ENABLE_PM_SAMPLING
     std::string sampler_error;
     if (PollSamplerExit(&sampler_error)) {
@@ -460,15 +470,15 @@ void NvidiaProcessMetricsWorker::Finish(const std::string& reason) {
 }
 
 void NvidiaProcessMetricsWorker::SetState(SessionState state,
-                                           const std::string& reason) {
+                                          const std::string& reason) {
   std::scoped_lock lock(mutex_);
   state_ = state;
   reason_ = reason;
 }
 
 void NvidiaProcessMetricsWorker::MakeResultsReadable() const {
-  const int directory_fd =
-      open(output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  const int directory_fd = open(
+      output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (directory_fd < 0) {
     std::fprintf(stderr, "cannot open result directory %s: %s\n",
                  output_dir_.c_str(), std::strerror(errno));
@@ -510,7 +520,7 @@ void NvidiaProcessMetricsWorker::MakeResultsReadable() const {
       continue;
     }
 
-    struct stat file_status {};
+    struct stat file_status{};
     if (fstat(file_fd, &file_status) != 0 || !S_ISREG(file_status.st_mode)) {
       close(file_fd);
       continue;
@@ -518,8 +528,7 @@ void NvidiaProcessMetricsWorker::MakeResultsReadable() const {
 
     if (fchownat(file_fd, "", owner_uid_, owner_gid_, AT_EMPTY_PATH) != 0) {
       std::fprintf(stderr, "cannot set result ownership for %s/%s: %s\n",
-                   output_dir_.c_str(), filename.c_str(),
-                   std::strerror(errno));
+                   output_dir_.c_str(), filename.c_str(), std::strerror(errno));
     }
     close(file_fd);
   }

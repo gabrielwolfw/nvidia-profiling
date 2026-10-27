@@ -34,5 +34,8 @@ where = ["analyzers"]
 include = ["energy_attribution*"]
 exclude = ["energy_attribution.tests*"]
 
+[tool.pyink]
+line-length = 80
+
 [tool.pytest.ini_options]
 testpaths = ["analyzers/energy_attribution/tests"]

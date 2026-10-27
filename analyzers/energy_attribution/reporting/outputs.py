@@ -50,7 +50,10 @@ def write_event_csv(path, events):
         if events.event_ids is not None:
             frame.insert(0, "event_id", events.event_ids[chunk])
         frame.to_csv(
-            path, mode="w" if offset == 0 else "a", header=offset == 0, index=False
+            path,
+            mode="w" if offset == 0 else "a",
+            header=offset == 0,
+            index=False,
         )
 
 
@@ -58,13 +61,21 @@ def _write_kernel_model(result, output_dir):
     """Outputs shared by the single- and multi-session kernel models."""
     output_dir.mkdir(parents=True, exist_ok=True)
     write_rows(output_dir / "bayesian_energy_windows.csv", result.dataset.rows)
-    write_rows(output_dir / "bayesian_kernel_coefficients.csv", result.coefficient_rows)
-    write_rows(output_dir / "bayesian_kernel_family_energy.csv", result.family_rows)
+    write_rows(
+        output_dir / "bayesian_kernel_coefficients.csv", result.coefficient_rows
+    )
+    write_rows(
+        output_dir / "bayesian_kernel_family_energy.csv", result.family_rows
+    )
     write_rows(output_dir / "bayesian_session_energy.csv", result.session_rows)
     if result.config.plot:
         create_plots(
-            output_dir, result.dataset.rows, result.family_rows,
-            result.session_rows, result.session_metrics, result.test_metrics,
+            output_dir,
+            result.dataset.rows,
+            result.family_rows,
+            result.session_rows,
+            result.session_metrics,
+            result.test_metrics,
         )
 
 
@@ -73,14 +84,20 @@ def write_single_session(result):
     _write_kernel_model(result, output_dir)
     if result.events is not None:
         logger.info("Writing per-event Bayesian attribution...")
-        write_event_csv(output_dir / "bayesian_kernel_event_energy.csv", result.events)
-    write_summary(output_dir / "bayesian_kernel_energy_summary.json", result.summary)
+        write_event_csv(
+            output_dir / "bayesian_kernel_event_energy.csv", result.events
+        )
+    write_summary(
+        output_dir / "bayesian_kernel_energy_summary.json", result.summary
+    )
 
 
 def write_multisession(result):
     output_dir = result.config.output_dir
     _write_kernel_model(result, output_dir)
-    write_summary(output_dir / "bayesian_kernel_energy_summary.json", result.summary)
+    write_summary(
+        output_dir / "bayesian_kernel_energy_summary.json", result.summary
+    )
 
 
 def write_cross_gpu(result):
@@ -88,8 +105,14 @@ def write_cross_gpu(result):
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     write_rows(output_dir / "bayesian_transfer_windows.csv", result.test_rows)
-    write_rows(output_dir / "thor_kernel_coefficients.csv", result.base_coefficient_rows)
-    write_rows(output_dir / "v100_calibration_coefficients.csv", result.calibration_rows)
+    write_rows(
+        output_dir / "thor_kernel_coefficients.csv",
+        result.base_coefficient_rows,
+    )
+    write_rows(
+        output_dir / "v100_calibration_coefficients.csv",
+        result.calibration_rows,
+    )
     write_rows(output_dir / "v100_kernel_family_energy.csv", result.family_rows)
     write_summary(output_dir / "bayesian_transfer_summary.json", result.summary)
     if config.plot:
@@ -106,13 +129,22 @@ def write_cross_gpu(result):
 def write_telemetry_session(result):
     output_dir = result.config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_rows(output_dir / "bayesian_window_predictions.csv", result.prediction_rows)
-    write_rows(output_dir / "bayesian_coefficients.csv", result.coefficient_rows)
+    write_rows(
+        output_dir / "bayesian_window_predictions.csv", result.prediction_rows
+    )
+    write_rows(
+        output_dir / "bayesian_coefficients.csv", result.coefficient_rows
+    )
     write_summary(output_dir / "bayesian_model_summary.json", result.summary)
     if result.config.plot:
         create_session_plots(
-            output_dir, result.prediction_rows, result.targets, result.predicted,
-            result.predictive_lower, result.predictive_upper, result.train_count,
+            output_dir,
+            result.prediction_rows,
+            result.targets,
+            result.predicted,
+            result.predictive_lower,
+            result.predictive_upper,
+            result.train_count,
         )
 
 
@@ -120,20 +152,33 @@ def write_telemetry_multisession(result):
     output_dir = result.config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     write_rows(
-        output_dir / "bayesian_multisession_predictions.csv", result.prediction_rows
+        output_dir / "bayesian_multisession_predictions.csv",
+        result.prediction_rows,
     )
     write_rows(
-        output_dir / "bayesian_multisession_coefficients.csv", result.coefficient_rows
+        output_dir / "bayesian_multisession_coefficients.csv",
+        result.coefficient_rows,
     )
-    write_rows(output_dir / "bayesian_session_energy.csv", result.session_energy_rows)
-    write_summary(output_dir / "bayesian_multisession_summary.json", result.summary)
+    write_rows(
+        output_dir / "bayesian_session_energy.csv", result.session_energy_rows
+    )
+    write_summary(
+        output_dir / "bayesian_multisession_summary.json", result.summary
+    )
     if result.config.plot:
         seconds = result.window_seconds
         create_multisession_plots(
-            output_dir, result.rows, result.power_targets,
-            result.predicted_energy / seconds, result.energy_lower / seconds,
-            result.energy_upper / seconds, result.energy_targets,
-            result.predicted_energy, result.energy_lower, result.energy_upper,
-            result.train_count, result.session_energy_rows,
+            output_dir,
+            result.rows,
+            result.power_targets,
+            result.predicted_energy / seconds,
+            result.energy_lower / seconds,
+            result.energy_upper / seconds,
+            result.energy_targets,
+            result.predicted_energy,
+            result.energy_lower,
+            result.energy_upper,
+            result.train_count,
+            result.session_energy_rows,
             result.config.platform_label,
         )

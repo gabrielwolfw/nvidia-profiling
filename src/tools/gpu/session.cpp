@@ -1,4 +1,11 @@
-#include "session.hpp"
+/**
+ * @file session.cpp
+ * @brief Daemon-side manager for GPU profiling sessions
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#include "gpu/session.hpp"  // NOLINT
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -8,8 +15,11 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <memory>
 #include <random>
 #include <sstream>
+#include <string>
+#include <utility>
 
 namespace nvidia_process_metrics {
 namespace {
@@ -44,10 +54,10 @@ class ScopedFd {
 };
 
 bool IsTrustedDirectory(int directory_fd, std::string* error) {
-  struct stat status {};
+  struct stat status{};
   if (fstat(directory_fd, &status) != 0) {
-    *error = std::string("cannot inspect results path: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot inspect results path: ") + std::strerror(errno);
     return false;
   }
 
@@ -68,7 +78,7 @@ bool IsTrustedDirectory(int directory_fd, std::string* error) {
 }
 
 bool IsPrivateDaemonDirectory(int directory_fd, std::string* error) {
-  struct stat status {};
+  struct stat status{};
   if (fstat(directory_fd, &status) != 0) {
     *error = std::string("cannot inspect results directory: ") +
              std::strerror(errno);
@@ -82,24 +92,22 @@ bool IsPrivateDaemonDirectory(int directory_fd, std::string* error) {
   return true;
 }
 
-int OpenOrCreateDirectoryAt(int parent_fd, const std::string& name,
-                            mode_t mode, std::string* error) {
-  int directory_fd =
-      openat(parent_fd, name.c_str(),
-             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+int OpenOrCreateDirectoryAt(int parent_fd, const std::string& name, mode_t mode,
+                            std::string* error) {
+  int directory_fd = openat(parent_fd, name.c_str(),
+                            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (directory_fd < 0 && errno == ENOENT) {
     if (mkdirat(parent_fd, name.c_str(), mode) != 0 && errno != EEXIST) {
       *error = std::string("cannot create results directory: ") +
                std::strerror(errno);
       return -1;
     }
-    directory_fd =
-        openat(parent_fd, name.c_str(),
-               O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    directory_fd = openat(parent_fd, name.c_str(),
+                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   }
   if (directory_fd < 0) {
-    *error = std::string("cannot open results directory: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot open results directory: ") + std::strerror(errno);
     return -1;
   }
   return directory_fd;
@@ -115,8 +123,8 @@ int OpenSecureResultsRoot(const std::filesystem::path& results_root,
   ScopedFd current(open(results_root.is_absolute() ? "/" : ".",
                         O_RDONLY | O_DIRECTORY | O_CLOEXEC));
   if (current.get() < 0) {
-    *error = std::string("cannot open results path root: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot open results path root: ") + std::strerror(errno);
     return -1;
   }
   if (!IsTrustedDirectory(current.get(), error)) {
@@ -145,8 +153,8 @@ int OpenSecureResultsRoot(const std::filesystem::path& results_root,
 
   const int result_fd = fcntl(current.get(), F_DUPFD_CLOEXEC, 0);
   if (result_fd < 0) {
-    *error = std::string("cannot retain results directory: ") +
-             std::strerror(errno);
+    *error =
+        std::string("cannot retain results directory: ") + std::strerror(errno);
   }
   return result_fd;
 }
@@ -173,9 +181,8 @@ bool CreateSessionDirectory(const std::filesystem::path& results_root,
     return false;
   }
 
-  ScopedFd session_fd(
-      openat(uid_fd.get(), session_id.c_str(),
-             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+  ScopedFd session_fd(openat(uid_fd.get(), session_id.c_str(),
+                             O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
   if (session_fd.get() < 0 || fchmod(session_fd.get(), 0700) != 0) {
     *error = std::string("cannot initialize session output directory: ") +
              std::strerror(errno);
@@ -191,7 +198,8 @@ bool CreateSessionDirectory(const std::filesystem::path& results_root,
 
 NvidiaProcessMetricsSessionManager::NvidiaProcessMetricsSessionManager(
     std::filesystem::path results_root, std::filesystem::path sampler_path)
-    : results_root_(std::move(results_root)), sampler_path_(std::move(sampler_path)) {}
+    : results_root_(std::move(results_root)),
+      sampler_path_(std::move(sampler_path)) {}
 
 bool NvidiaProcessMetricsSessionManager::Create(
     uid_t uid, gid_t gid, int device, std::chrono::seconds max_duration,
@@ -210,10 +218,10 @@ bool NvidiaProcessMetricsSessionManager::Create(
                               error)) {
     return false;
   }
-  sessions_.emplace(*session_id,
-                    Session{uid, gid, device, window_ms, max_duration,
-                            *output_dir, nullptr, std::chrono::steady_clock::now(),
-                            next_sequence_++});
+  sessions_.emplace(
+      *session_id,
+      Session{uid, gid, device, window_ms, max_duration, *output_dir, nullptr,
+              std::chrono::steady_clock::now(), next_sequence_++});
   return true;
 }
 
@@ -250,7 +258,8 @@ bool NvidiaProcessMetricsSessionManager::RemoveOldestEvictableSession(
   auto oldest_terminal = sessions_.end();
   const auto now = std::chrono::steady_clock::now();
 
-  for (auto session = sessions_.begin(); session != sessions_.end(); ++session) {
+  for (auto session = sessions_.begin(); session != sessions_.end();
+       ++session) {
     if (filter_by_uid && session->second.uid != uid) {
       continue;
     }
@@ -290,9 +299,8 @@ bool NvidiaProcessMetricsSessionManager::RemoveOldestEvictableSession(
 }
 
 bool NvidiaProcessMetricsSessionManager::Start(const std::string& session_id,
-                                                pid_t pid,
-                                                uid_t requester_uid,
-                                                std::string* error) {
+                                               pid_t pid, uid_t requester_uid,
+                                               std::string* error) {
   std::shared_ptr<NvidiaProcessMetricsWorker> worker;
   int reserved_device = -1;
   {
@@ -350,8 +358,8 @@ bool NvidiaProcessMetricsSessionManager::Start(const std::string& session_id,
 }
 
 bool NvidiaProcessMetricsSessionManager::Stop(const std::string& session_id,
-                                               uid_t requester_uid,
-                                               std::string* error) {
+                                              uid_t requester_uid,
+                                              std::string* error) {
   std::shared_ptr<NvidiaProcessMetricsWorker> worker;
   {
     std::scoped_lock lock(mutex_);
@@ -370,9 +378,9 @@ bool NvidiaProcessMetricsSessionManager::Stop(const std::string& session_id,
 }
 
 bool NvidiaProcessMetricsSessionManager::Fail(const std::string& session_id,
-                                               uid_t requester_uid,
-                                               const std::string& reason,
-                                               std::string* error) {
+                                              uid_t requester_uid,
+                                              const std::string& reason,
+                                              std::string* error) {
   std::shared_ptr<NvidiaProcessMetricsWorker> worker;
   {
     std::scoped_lock lock(mutex_);
@@ -390,10 +398,12 @@ bool NvidiaProcessMetricsSessionManager::Fail(const std::string& session_id,
   return true;
 }
 
-bool NvidiaProcessMetricsSessionManager::Get(
-    const std::string& session_id, uid_t requester_uid, SessionState* state,
-    std::string* reason, std::filesystem::path* output_dir,
-    std::string* error) const {
+bool NvidiaProcessMetricsSessionManager::Get(const std::string& session_id,
+                                             uid_t requester_uid,
+                                             SessionState* state,
+                                             std::string* reason,
+                                             std::filesystem::path* output_dir,
+                                             std::string* error) const {
   std::scoped_lock lock(mutex_);
   const Session* session = nullptr;
   if (!GetOwnedSession(session_id, requester_uid, &session, error)) {

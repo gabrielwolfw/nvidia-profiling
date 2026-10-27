@@ -1,4 +1,4 @@
-"""Pooled Bayesian kernel-energy attribution across sessions (computation only)."""
+"""Pooled Bayesian kernel-energy attribution across sessions."""
 
 import logging
 from dataclasses import dataclass
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MultiSessionResult:  # pylint: disable=too-many-instance-attributes
-    """Everything computed for the pooled model; ``summary`` is the JSON report."""
+    """Pooled model results; ``summary`` is the JSON report."""
 
     config: MultiSessionConfig
     dataset: WindowDataset
@@ -87,12 +87,18 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
     sessions = []
     for session in scan.sessions:
         windows = build_session_windows(
-            session, scan.selected, family_index, config.window_ns,
+            session,
+            scan.selected,
+            family_index,
+            config.window_ns,
             config.idle_power_mw,
         )
         windows.train_count = assign_splits(
-            windows.rows, config.train_fraction, config.window_ns,
-            config.min_window_fraction, strict=False,
+            windows.rows,
+            config.train_fraction,
+            config.window_ns,
+            config.min_window_fraction,
+            strict=False,
         )
         sessions.append(windows)
     dataset = pooled_dataset(sessions)
@@ -102,14 +108,15 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
         config, dataset, terms, label="pooled posterior"
     )
     allocation = allocate_energy(config, dataset, posterior, predictions)
-    train_metrics, test_metrics, session_rows, session_metrics = holdout_metrics(
-        dataset, predictions
+    train_metrics, test_metrics, session_rows, session_metrics = (
+        holdout_metrics(dataset, predictions)
     )
     accounting = energy_accounting(dataset.rows, allocation)
     summary = {
         "model": "pooled_nonnegative_bayesian_kernel_family_regression",
         "attribution_mode": config.attribution,
-        "validation": "final temporal fraction held out independently per session",
+        "validation": "final temporal fraction held out independently per "
+        "session",
         "sessions_root": str(config.sessions_root),
         "included_sessions": [session.name for session in sessions],
         "excluded_sessions": scan.excluded_sessions,
@@ -148,8 +155,11 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
             terms, posterior.coefficient_draws, posterior.column_scale
         ),
         family_rows=family_energy_rows(
-            family_index, scan.duration_by_name, scan.event_count_by_name,
-            scan.selected, allocation.family_total_draws,
+            family_index,
+            scan.duration_by_name,
+            scan.event_count_by_name,
+            scan.selected,
+            allocation.family_total_draws,
         ),
         session_rows=session_rows,
         session_metrics=session_metrics,

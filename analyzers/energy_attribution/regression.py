@@ -98,12 +98,22 @@ def fit_nonnegative_bayesian_regression(
 def posterior_summary(values):
     """Return (mean, median, lower 2.5%, upper 97.5%) of 1-D draws as floats."""
     lower, upper = np.quantile(values, [0.025, 0.975])
-    return float(values.mean()), float(np.median(values)), float(lower), float(upper)
+    return (
+        float(values.mean()),
+        float(np.median(values)),
+        float(lower),
+        float(upper),
+    )
 
 
 def coefficient_summary_rows(
-    terms, coefficient_draws, column_scale, *,
-    prefix="posterior_power_", suffix="_w", include_median=False,
+    terms,
+    coefficient_draws,
+    column_scale,
+    *,
+    prefix="posterior_power_",
+    suffix="_w",
+    include_median=False,
 ):
     """One CSV row per model term with posterior mean and 95% interval.
 
@@ -112,7 +122,9 @@ def coefficient_summary_rows(
     """
     rows = []
     for index, term in enumerate(terms):
-        mean, median, lower, upper = posterior_summary(coefficient_draws[:, index])
+        mean, median, lower, upper = posterior_summary(
+            coefficient_draws[:, index]
+        )
         row = {"term": term, f"{prefix}mean{suffix}": mean}
         if include_median:
             row[f"{prefix}median{suffix}"] = median
@@ -121,4 +133,3 @@ def coefficient_summary_rows(
         row["activity_rms_scale"] = float(column_scale[index])
         rows.append(row)
     return rows
-

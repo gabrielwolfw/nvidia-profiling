@@ -28,13 +28,17 @@ from energy_attribution.workflows import (
 )
 
 
-def analyze_single_session(config: SingleSessionConfig) -> single_session.SingleSessionResult:
+def analyze_single_session(
+    config: SingleSessionConfig,
+) -> single_session.SingleSessionResult:
     """Fit one session and attribute its energy; writes nothing."""
     config.validate()
     return single_session.analyze(config)
 
 
-def analyze_multisession(config: MultiSessionConfig) -> multisession.MultiSessionResult:
+def analyze_multisession(
+    config: MultiSessionConfig,
+) -> multisession.MultiSessionResult:
     """Fit one pooled model across sessions; writes nothing."""
     config.validate()
     return multisession.analyze(config)
@@ -46,14 +50,18 @@ def analyze_cross_gpu(config: CrossGpuConfig) -> cross_gpu.CrossGpuResult:
     return cross_gpu.analyze(config)
 
 
-def run_single_session(config: SingleSessionConfig) -> single_session.SingleSessionResult:
+def run_single_session(
+    config: SingleSessionConfig,
+) -> single_session.SingleSessionResult:
     """Analyze one session and write its outputs."""
     result = analyze_single_session(config)
     write_single_session(result)
     return result
 
 
-def run_multisession(config: MultiSessionConfig) -> multisession.MultiSessionResult:
+def run_multisession(
+    config: MultiSessionConfig,
+) -> multisession.MultiSessionResult:
     """Analyze several sessions with one pooled model and write its outputs."""
     result = analyze_multisession(config)
     write_multisession(result)
@@ -78,7 +86,7 @@ def analyze_telemetry_session(
 def analyze_telemetry_multisession(
     config: TelemetryMultiSessionConfig,
 ) -> telemetry_multisession.TelemetryMultiSessionResult:
-    """Fit one telemetry-feature energy model across sessions; writes nothing."""
+    """Fit one telemetry energy model across sessions; writes nothing."""
     config.validate()
     return telemetry_multisession.analyze(config)
 

@@ -64,7 +64,8 @@ def check_identifiability(
         suggestion = max(2, int(train_count // min_windows_per_parameter) - 1)
         message = (
             f"Only {train_count} training windows for {parameters} parameters "
-            f"(need at least {required} at {min_windows_per_parameter:g} windows "
+            f"(need at least {required} at {min_windows_per_parameter:g} "
+            "windows "
             f"per parameter). Reduce --max-families (e.g. to {suggestion}), "
             "use shorter --window-ms, pool more sessions, or pass "
             "--allow-underdetermined to fit anyway."
@@ -79,13 +80,18 @@ def check_identifiability(
     test_activity = test.sum(axis=0)
     total_test_activity = float(test_activity[1:].sum())
     unseen = [
-        index for index in range(1, parameters)
+        index
+        for index in range(1, parameters)
         if not train_active[index] and test_active[index]
     ]
     report["families_without_training_activity"] = [
-        terms[index] for index in range(1, parameters) if not train_active[index]
+        terms[index]
+        for index in range(1, parameters)
+        if not train_active[index]
     ]
-    report["test_families_unseen_in_training"] = [terms[index] for index in unseen]
+    report["test_families_unseen_in_training"] = [
+        terms[index] for index in unseen
+    ]
     report["test_activity_share_unseen_in_training"] = (
         float(test_activity[unseen].sum()) / total_test_activity
         if total_test_activity > 0.0
@@ -100,20 +106,25 @@ def log_identifiability_warnings(report, label=str):
     if report["design_matrix_rank"] < report["parameters"]:
         logger.warning(
             "Kernel-family activity is not fully identifiable "
-            f"(rank {report['design_matrix_rank']} of {report['parameters']}); "
-            "interpret overlapping family intervals conservatively."
+            "(rank %s of %s); "
+            "interpret overlapping family intervals conservatively.",
+            report["design_matrix_rank"],
+            report["parameters"],
         )
     if report["aliased_terms"]:
+        aliased_terms = report["aliased_terms"]
         logger.warning(
-            f"{len(report['aliased_terms'])} terms are linear "
-            "combinations of others in training and are prior-dominated: "
-            + ", ".join(label(term) for term in report["aliased_terms"][:8])
-            + (" ..." if len(report["aliased_terms"]) > 8 else "")
+            "%s terms are linear "
+            "combinations of others in training and are prior-dominated: %s%s",
+            len(aliased_terms),
+            ", ".join(label(term) for term in aliased_terms[:8]),
+            " ..." if len(aliased_terms) > 8 else "",
         )
     if report["test_families_unseen_in_training"]:
         logger.warning(
-            f"{len(report['test_families_unseen_in_training'])} "
-            "families are active in the holdout but never in training "
-            f"({100.0 * report['test_activity_share_unseen_in_training']:.1f}% "
-            "of holdout family activity); their coefficients come from the prior."
+            "%s families are active in the holdout but never in training "
+            "(%.1f%% of holdout family activity); "
+            "their coefficients come from the prior.",
+            len(report["test_families_unseen_in_training"]),
+            100.0 * report["test_activity_share_unseen_in_training"],
         )

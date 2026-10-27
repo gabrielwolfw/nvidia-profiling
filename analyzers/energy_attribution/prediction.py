@@ -41,7 +41,7 @@ def regression_metrics(actual, predicted):
 
 
 def interval_coverage(actual, lower, upper):
-    if not len(actual):
+    if len(actual) == 0:
         return None
     return float(np.mean((actual >= lower) & (actual <= upper)))
 
@@ -58,7 +58,8 @@ def summarize_predictions(prediction_draws, noise_draws, seed):
     predictive_draws = np.maximum(
         0.0,
         prediction_draws
-        + rng.normal(size=prediction_draws.shape) * np.sqrt(noise_draws)[:, None],
+        + rng.normal(size=prediction_draws.shape)
+        * np.sqrt(noise_draws)[:, None],
     )
     credible_lower, credible_upper = np.quantile(
         prediction_draws, [0.025, 0.975], axis=0
@@ -103,7 +104,9 @@ def prediction_metrics(target_power_w, predictions, mask):
     actual = target_power_w[mask]
     metrics = regression_metrics(actual, predictions.mean[mask])
     metrics["credible_interval_95_coverage"] = interval_coverage(
-        actual, predictions.credible_lower[mask], predictions.credible_upper[mask]
+        actual,
+        predictions.credible_lower[mask],
+        predictions.credible_upper[mask],
     )
     metrics["predictive_interval_95_coverage"] = interval_coverage(
         actual,
@@ -131,12 +134,16 @@ def session_holdout_energy(window_rows, predictions):
 
     session_rows = []
     for name, indices in indices_by_session.items():
-        seconds = np.asarray(
-            [window_rows[index]["duration_ns"] for index in indices]
-        ) / NS_PER_SECOND
-        measured_j = np.asarray(
-            [window_rows[index]["dynamic_energy_mj"] for index in indices]
-        ) / 1000.0
+        seconds = (
+            np.asarray([window_rows[index]["duration_ns"] for index in indices])
+            / NS_PER_SECOND
+        )
+        measured_j = (
+            np.asarray(
+                [window_rows[index]["dynamic_energy_mj"] for index in indices]
+            )
+            / 1000.0
+        )
         window_draws = predictions.prediction_draws[:, indices]
         total_draws = window_draws @ seconds
         lower, upper = np.quantile(total_draws, [0.025, 0.975])
@@ -157,8 +164,12 @@ def session_holdout_energy(window_rows, predictions):
                 "predicted_energy_mean_j": predicted_total,
                 "predicted_energy_lower_95_j": float(lower),
                 "predicted_energy_upper_95_j": float(upper),
-                "predicted_energy_predictive_lower_95_j": float(predictive_lower),
-                "predicted_energy_predictive_upper_95_j": float(predictive_upper),
+                "predicted_energy_predictive_lower_95_j": float(
+                    predictive_lower
+                ),
+                "predicted_energy_predictive_upper_95_j": float(
+                    predictive_upper
+                ),
                 "energy_error_pct": (
                     100.0 * (predicted_total - measured_total) / measured_total
                     if measured_total > 0.0
@@ -167,19 +178,23 @@ def session_holdout_energy(window_rows, predictions):
                 "measured_power_mean_w": measured_total / float(seconds.sum()),
                 "measured_power_min_w": float(measured_power[full].min()),
                 "measured_power_max_w": float(measured_power[full].max()),
-                "predicted_power_mean_w": predicted_total / float(seconds.sum()),
+                "predicted_power_mean_w": predicted_total
+                / float(seconds.sum()),
                 "predicted_power_min_w": float(predicted_power[full].min()),
                 "predicted_power_max_w": float(predicted_power[full].max()),
             }
         )
 
     measured = np.asarray([row["measured_energy_j"] for row in session_rows])
-    predicted = np.asarray([row["predicted_energy_mean_j"] for row in session_rows])
+    predicted = np.asarray(
+        [row["predicted_energy_mean_j"] for row in session_rows]
+    )
     errors = [
         abs(row["energy_error_pct"])
         for row in session_rows
         if row["energy_error_pct"] is not None
     ]
+
     def coverage(prefix):
         return float(
             np.mean(
@@ -205,9 +220,13 @@ def session_holdout_energy(window_rows, predictions):
         ),
         "max_absolute_energy_error_pct": float(max(errors)) if errors else None,
         "total_energy_error_pct": (
-            100.0 * float(predicted.sum() - measured.sum()) / float(measured.sum())
+            100.0
+            * float(predicted.sum() - measured.sum())
+            / float(measured.sum())
         ),
         "credible_interval_95_coverage": coverage("predicted_energy_"),
-        "predictive_interval_95_coverage": coverage("predicted_energy_predictive_"),
+        "predictive_interval_95_coverage": coverage(
+            "predicted_energy_predictive_"
+        ),
     }
     return session_rows, session_metrics

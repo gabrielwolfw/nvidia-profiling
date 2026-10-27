@@ -1,10 +1,18 @@
-#pragma once
+/**
+ * @file worker.hpp
+ * @brief Per-session worker that supervises a profiled workload
+ *
+ * @copyright Copyright (c) 2026. See License for Licensing
+ */
+
+#ifndef SRC_TOOLS_GPU_WORKER_HPP_
+#define SRC_TOOLS_GPU_WORKER_HPP_
 
 #include <sys/types.h>
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <mutex>
 #include <string>
 #include <thread>
@@ -23,7 +31,8 @@ class NvidiaProcessMetricsWorker {
   ~NvidiaProcessMetricsWorker();
 
   NvidiaProcessMetricsWorker(const NvidiaProcessMetricsWorker&) = delete;
-  NvidiaProcessMetricsWorker& operator=(const NvidiaProcessMetricsWorker&) = delete;
+  NvidiaProcessMetricsWorker& operator=(const NvidiaProcessMetricsWorker&) =
+      delete;
 
   bool Start(std::string* error);
   void Stop();
@@ -62,3 +71,5 @@ class NvidiaProcessMetricsWorker {
 const char* SessionStateName(SessionState state);
 
 }  // namespace nvidia_process_metrics
+
+#endif  // SRC_TOOLS_GPU_WORKER_HPP_

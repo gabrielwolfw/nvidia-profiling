@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TelemetryMultiSessionResult:  # pylint: disable=too-many-instance-attributes
-    """Pooled predictions (train rows first), coefficients and session totals."""
+    """Pooled predictions (train rows first), coefficients, session totals."""
 
     config: TelemetryMultiSessionConfig
     rows: list
@@ -49,14 +49,18 @@ def load_session(session, config):
     """Aggregate one session and label its rows; returns (rows, X, y, split)."""
     logger.info("\n=== Aggregating %s ===", session.name)
     origin_ns, rows, features, targets = load_windows(
-        session.telemetry, session.kernels, config.window_ns,
+        session.telemetry,
+        session.kernels,
+        config.window_ns,
         config.min_telemetry_samples,
     )
     split = split_point(len(rows), config.train_fraction, strict=False)
     for position, row in enumerate(rows):
         row["session"] = session.name
         row["session_window_index"] = position
-        row["session_elapsed_s"] = (row["window_start_ns"] - origin_ns) / NS_PER_SECOND
+        row["session_elapsed_s"] = (
+            row["window_start_ns"] - origin_ns
+        ) / NS_PER_SECOND
         row["split"] = "train" if position < split else "test"
     return rows, features, targets, split
 
@@ -65,8 +69,14 @@ def session_energy(rows, sessions, predicted_energy):
     """Measured and predicted total energy of each session."""
     energy_rows = []
     for session in sessions:
-        indices = [index for index, row in enumerate(rows) if row["session"] == session.name]
-        measured = float(sum(rows[index]["measured_energy_j"] for index in indices))
+        indices = [
+            index
+            for index, row in enumerate(rows)
+            if row["session"] == session.name
+        ]
+        measured = float(
+            sum(rows[index]["measured_energy_j"] for index in indices)
+        )
         modeled = float(sum(predicted_energy[index] for index in indices))
         energy_rows.append(
             {
@@ -99,7 +109,8 @@ def analyze(  # pylint: disable=too-many-locals
         train_parts.append((rows[:split], features[:split], targets[:split]))
         test_parts.append((rows[split:], features[split:], targets[split:]))
         session_counts[session.name] = {
-            "windows": len(rows), "train_windows": split,
+            "windows": len(rows),
+            "train_windows": split,
             "test_windows": len(rows) - split,
         }
 
@@ -111,11 +122,19 @@ def analyze(  # pylint: disable=too-many-locals
     energy_targets = power_targets * window_seconds
     train_count = sum(len(part) for part, _, _ in train_parts)
     fit = fit_bayesian_regression(
-        features, energy_targets, train_count, config.prior_scale,
-        config.posterior_draws, config.seed,
+        features,
+        energy_targets,
+        train_count,
+        config.prior_scale,
+        config.posterior_draws,
+        config.seed,
     )
     (
-        predicted_energy, credible_lower, credible_upper, energy_lower, energy_upper,
+        predicted_energy,
+        credible_lower,
+        credible_upper,
+        energy_lower,
+        energy_upper,
     ) = posterior_intervals(fit)
     predicted_power = predicted_energy / window_seconds
     power_lower = energy_lower / window_seconds
@@ -131,35 +150,48 @@ def analyze(  # pylint: disable=too-many-locals
                 "credible_energy_upper_j": credible_upper[index],
                 "predictive_energy_lower_j": energy_lower[index],
                 "predictive_energy_upper_j": energy_upper[index],
-                "energy_residual_j": energy_targets[index] - predicted_energy[index],
+                "energy_residual_j": energy_targets[index]
+                - predicted_energy[index],
                 "predicted_power_w": predicted_power[index],
-                "credible_power_lower_w": credible_lower[index] / window_seconds,
-                "credible_power_upper_w": credible_upper[index] / window_seconds,
+                "credible_power_lower_w": credible_lower[index]
+                / window_seconds,
+                "credible_power_upper_w": credible_upper[index]
+                / window_seconds,
                 "predictive_power_lower_w": power_lower[index],
                 "predictive_power_upper_w": power_upper[index],
-                "power_residual_w": power_targets[index] - predicted_power[index],
+                "power_residual_w": power_targets[index]
+                - predicted_power[index],
             }
         )
         prediction_rows.append(output)
 
     test = slice(train_count, None)
     power_metrics = interval_regression_metrics(
-        power_targets[test], predicted_power[test], power_lower[test], power_upper[test]
+        power_targets[test],
+        predicted_power[test],
+        power_lower[test],
+        power_upper[test],
     )
     raw_energy = interval_regression_metrics(
-        energy_targets[test], predicted_energy[test], energy_lower[test], energy_upper[test]
+        energy_targets[test],
+        predicted_energy[test],
+        energy_lower[test],
+        energy_upper[test],
     )
     energy_metrics = {
         "count": raw_energy["count"],
         "mae_j_per_window": raw_energy["mae_w"],
         "rmse_j_per_window": raw_energy["rmse_w"],
         "r_squared": raw_energy["r_squared"],
-        "predictive_interval_95_coverage": raw_energy["predictive_interval_95_coverage"],
+        "predictive_interval_95_coverage": raw_energy[
+            "predictive_interval_95_coverage"
+        ],
     }
     summary = {
         "model": "multisession_conjugate_bayesian_linear_energy_regression",
         "target": "measured_energy_j_per_fixed_window",
-        "validation": "final temporal fraction held out independently per session",
+        "validation": "final temporal fraction held out independently per "
+        "session",
         "sessions_root": str(config.sessions_root),
         "session_count": len(sessions),
         "window_ms": config.window_ms,
@@ -177,7 +209,8 @@ def analyze(  # pylint: disable=too-many-locals
         rows=rows,
         prediction_rows=prediction_rows,
         coefficient_rows=coefficient_rows(
-            fit, "J per window at training feature means",
+            fit,
+            "J per window at training feature means",
             "J per window per one training standard deviation",
         ),
         session_energy_rows=session_energy(rows, sessions, predicted_energy),

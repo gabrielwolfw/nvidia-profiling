@@ -74,10 +74,15 @@ def fit_posterior(config, dataset, terms, label="posterior"):
     ``(identifiability, posterior, predictions)``.
     """
     identifiability = check_identifiability(
-        dataset.design[dataset.mask("train", "test")], dataset.train_count, terms,
-        config.min_windows_per_parameter, config.allow_underdetermined,
+        dataset.design[dataset.mask("train", "test")],
+        dataset.train_count,
+        terms,
+        config.min_windows_per_parameter,
+        config.allow_underdetermined,
     )
-    logger.info("Sampling %s with %d training windows...", label, dataset.train_count)
+    logger.info(
+        "Sampling %s with %d training windows...", label, dataset.train_count
+    )
     posterior = fit_nonnegative_bayesian_regression(
         dataset.design,
         dataset.target_power_w,
@@ -90,7 +95,8 @@ def fit_posterior(config, dataset, terms, label="posterior"):
         config.seed,
     )
     predictions = summarize_predictions(
-        posterior.prediction_draws, posterior.noise_draws,
+        posterior.prediction_draws,
+        posterior.noise_draws,
         config.seed + PREDICTIVE_SEED_OFFSET,
     )
     return identifiability, posterior, predictions
@@ -179,7 +185,9 @@ def analyze(config: SingleSessionConfig) -> SingleSessionResult:
     window_ns = config.window_ns
     trace = load_power_trace(config.telemetry)
     logger.info("Loading kernel events...")
-    table = load_kernels(config.kernels, load_event_ids=not config.skip_event_output)
+    table = load_kernels(
+        config.kernels, load_event_ids=not config.skip_event_output
+    )
     scan = scan_kernel_families(table, config.max_families)
     analysis_start = max(trace.first_ns, scan.first_start)
     analysis_end = min(trace.last_ns, scan.last_end)
@@ -189,14 +197,20 @@ def analyze(config: SingleSessionConfig) -> SingleSessionResult:
     families = scan.families
     family_index = {name: index for index, name in enumerate(families)}
     logger.info(
-        "Using %d kernel families for %d events.", len(families), scan.valid_events
+        "Using %d kernel families for %d events.",
+        len(families),
+        scan.valid_events,
     )
     columns = family_columns(table, scan.selected, family_index)
     activity_ns, union_active_ns = aggregate_family_activity(
         table, columns, len(families), analysis_start, analysis_end, window_ns
     )
     rows, target_power_w = build_windows(
-        trace, union_active_ns, analysis_start, analysis_end, window_ns,
+        trace,
+        union_active_ns,
+        analysis_start,
+        analysis_end,
+        window_ns,
         config.idle_power_mw,
     )
     train_count = assign_splits(
@@ -205,19 +219,29 @@ def analyze(config: SingleSessionConfig) -> SingleSessionResult:
     dataset = WindowDataset(rows, activity_ns, target_power_w, train_count)
 
     terms = ["unattributed_baseline"] + families
-    identifiability, posterior, predictions = fit_posterior(config, dataset, terms)
+    identifiability, posterior, predictions = fit_posterior(
+        config, dataset, terms
+    )
     allocation = allocate_energy(config, dataset, posterior, predictions)
-    train_metrics, test_metrics, session_rows, session_metrics = holdout_metrics(
-        dataset, predictions
+    train_metrics, test_metrics, session_rows, session_metrics = (
+        holdout_metrics(dataset, predictions)
     )
     accounting = energy_accounting(rows, allocation)
     events = None
     if not config.skip_event_output:
         events = attribute_events(
-            table, columns, families, activity_ns, allocation,
-            analysis_start, analysis_end, window_ns,
+            table,
+            columns,
+            families,
+            activity_ns,
+            allocation,
+            analysis_start,
+            analysis_end,
+            window_ns,
         )
-        accounting["event_attributed_posterior_mean_mj"] = float(events.mean.sum())
+        accounting["event_attributed_posterior_mean_mj"] = float(
+            events.mean.sum()
+        )
 
     parts = {
         "families": families,
@@ -241,8 +265,11 @@ def analyze(config: SingleSessionConfig) -> SingleSessionResult:
             terms, posterior.coefficient_draws, posterior.column_scale
         ),
         family_rows=family_energy_rows(
-            family_index, scan.duration_by_name, scan.event_count_by_name,
-            scan.selected, allocation.family_total_draws,
+            family_index,
+            scan.duration_by_name,
+            scan.event_count_by_name,
+            scan.selected,
+            allocation.family_total_draws,
         ),
         session_rows=session_rows,
         session_metrics=session_metrics,

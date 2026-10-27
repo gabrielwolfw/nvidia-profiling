@@ -72,9 +72,7 @@ def load_telemetry(path, window_ns):
         raise ValueError("Telemetry must cover more than one timestamp")
 
     origin_ns = samples[0]["timestamp_ns"]
-    window_count = (
-        (samples[-1]["timestamp_ns"] - origin_ns) // window_ns + 1
-    )
+    window_count = (samples[-1]["timestamp_ns"] - origin_ns) // window_ns + 1
     sums = {
         key: np.zeros(window_count, dtype=np.float64)
         for key in (
@@ -210,9 +208,7 @@ def build_dataset(
                 / NS_PER_SECOND,
                 "temperature_c": averages["temperature_c"],
                 "gpu_utilization_pct": averages["gpu_utilization_pct"],
-                "memory_utilization_pct": averages[
-                    "memory_utilization_pct"
-                ],
+                "memory_utilization_pct": averages["memory_utilization_pct"],
                 "graphics_clock_mhz": averages["graphics_clock_mhz"],
                 "kernel_active_pct": kernel_active_pct,
                 "kernel_count": int(kernel_count[index]),
@@ -227,7 +223,8 @@ def build_dataset(
 
     if len(rows) < 10:
         raise ValueError(
-            "At least ten complete windows are required after telemetry filtering"
+            "At least ten complete windows are required after telemetry "
+            "filtering"
         )
     return rows, np.asarray(features), np.asarray(targets)
 
@@ -251,16 +248,13 @@ def fit_bayesian_regression(
     train_target = (train_targets - target_mean) / target_scale
 
     parameter_count = train_design.shape[1]
-    prior_mean = np.zeros(parameter_count)
     prior_variance = np.full(parameter_count, prior_scale**2)
     prior_variance[0] = 25.0
     prior_precision = np.diag(1.0 / prior_variance)
 
     posterior_precision = prior_precision + train_design.T @ train_design
     posterior_covariance = np.linalg.inv(posterior_precision)
-    posterior_mean = posterior_covariance @ (
-        train_design.T @ train_target
-    )
+    posterior_mean = posterior_covariance @ (train_design.T @ train_target)
     shape = 2.0 + train_count / 2.0
     rate = 1.0 + 0.5 * (
         train_target @ train_target
@@ -275,9 +269,11 @@ def fit_bayesian_regression(
     )
     covariance_root = np.linalg.cholesky(posterior_covariance)
     standard_normal = rng.normal(size=(posterior_draws, parameter_count))
-    coefficient_draws = posterior_mean + (
-        standard_normal @ covariance_root.T
-    ) * np.sqrt(noise_variance)[:, None]
+    coefficient_draws = (
+        posterior_mean
+        + (standard_normal @ covariance_root.T)
+        * np.sqrt(noise_variance)[:, None]
+    )
 
     mean_draws_standardized = coefficient_draws @ design.T
     mean_draws_w = target_mean + target_scale * mean_draws_standardized
@@ -298,18 +294,21 @@ def fit_bayesian_regression(
     }
 
 
-
 def interval_regression_metrics(actual, predicted, lower, upper):
-    """Point-error metrics plus the share of ``actual`` inside [lower, upper]."""
+    """Point-error metrics and the share of ``actual`` in [lower, upper]."""
     metrics = regression_metrics(actual, predicted)
-    metrics["predictive_interval_95_coverage"] = interval_coverage(actual, lower, upper)
+    metrics["predictive_interval_95_coverage"] = interval_coverage(
+        actual, lower, upper
+    )
     return metrics
 
 
 def coefficient_rows(fit, intercept_unit, slope_unit):
-    """Posterior coefficients in target units (intercept at the feature means)."""
+    """Posterior coefficients in target units (intercept at feature means)."""
     rows = []
-    for index, name in enumerate(["intercept_at_training_mean"] + FEATURE_NAMES):
+    for index, name in enumerate(
+        ["intercept_at_training_mean"] + FEATURE_NAMES
+    ):
         values = fit["coefficient_draws"][:, index] * fit["target_scale"]
         if index == 0:
             values = values + fit["target_mean"]

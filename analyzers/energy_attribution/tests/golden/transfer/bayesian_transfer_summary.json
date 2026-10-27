@@ -1,0 +1,77 @@
+{
+  "model": "cross_gpu_bayesian_kernel_family_transfer",
+  "attribution_mode": "model",
+  "training_sessions_root": "/tmp/tmpcadjm_tr/fixture/train",
+  "training_sessions": [
+    "s1-compute",
+    "s2-memory",
+    "s3-mixed"
+  ],
+  "excluded_training_sessions": [],
+  "external_test_session": "/tmp/tmpcadjm_tr/fixture/external/x1-external",
+  "validation": "Thor-only training; first V100 prefix reserved for offset/scale calibration; both methods compared on the untouched V100 suffix",
+  "window_ms": 200.0,
+  "calibration_fraction": 0.2,
+  "training_windows": 211,
+  "v100_calibration_windows": 9,
+  "v100_evaluation_windows": 37,
+  "excluded_short_windows": {
+    "training": 3,
+    "v100": 1
+  },
+  "min_window_fraction": 0.9,
+  "kernel_families": 5,
+  "training_design_rank": 6,
+  "training_design_parameters": 6,
+  "identifiability": {
+    "train_windows": 211,
+    "parameters": 6,
+    "min_windows_per_parameter": 3.0,
+    "required_train_windows": 18,
+    "design_matrix_rank": 6,
+    "underdetermined": false,
+    "families_without_training_activity": [],
+    "test_families_unseen_in_training": [],
+    "test_activity_share_unseen_in_training": 0.0,
+    "aliased_terms": []
+  },
+  "v100_explicit_family_event_coverage": 0.8212351029252438,
+  "v100_explicit_family_duration_coverage": 0.9366664204845235,
+  "zero_shot_evaluation_power_metrics": {
+    "count": 37,
+    "mae_w": 80.31638898049415,
+    "rmse_w": 81.92869825065743,
+    "r_squared": -8.495853192100432
+  },
+  "calibrated_evaluation_power_metrics": {
+    "count": 37,
+    "mae_w": 10.714851193817516,
+    "rmse_w": 12.491182313996116,
+    "r_squared": 0.7792661303238015
+  },
+  "calibrated_rmse_reduction_fraction": 0.847535935750134,
+  "zero_shot_predictive_interval_coverage": 0.0,
+  "calibrated_predictive_interval_coverage": 1.0,
+  "calibration_posterior": {
+    "v100_offset_w": {
+      "posterior_mean": 57.267307775147465,
+      "posterior_median": 50.9286030415482,
+      "posterior_lower_95": 3.833904650233165,
+      "posterior_upper_95": 138.9581381242738,
+      "activity_rms_scale": 1.0
+    },
+    "thor_prediction_scale": {
+      "posterior_mean": 1.7219817241972195,
+      "posterior_median": 1.825918927482315,
+      "posterior_lower_95": 0.21410560076462462,
+      "posterior_upper_95": 2.7075922737247473,
+      "activity_rms_scale": 54.64858959676836
+    }
+  },
+  "v100_measured_dynamic_energy_mj": 1202387.8253358658,
+  "v100_assignable_dynamic_energy_mj": 1202387.8253358658,
+  "v100_attributed_posterior_mean_mj": 401044.7184481514,
+  "v100_baseline_posterior_mean_mj": 801343.1068877145,
+  "conservation_error_mj": 0.0,
+  "important_limitation": "A global offset and scale calibrate device-level power but do not prove that every kernel-family coefficient transfers unchanged."
+}

@@ -21,8 +21,9 @@ RPM_SOURCE_PATHS = (
     "LICENSE",
     "meson.build",
     "meson_options.txt",
-    "nvidia",
-    "tools",
+    "include",
+    "src",
+    "misc",
 )
 
 

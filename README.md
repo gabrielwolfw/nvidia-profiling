@@ -4,6 +4,25 @@ A profiler for NVIDIA GPUs that does not require changing the target's source.
 It combines CUPTI Activity for the kernel timeline, NVML for device telemetry,
 and CUPTI PM Sampling for microarchitectural metrics.
 
+## Source layout
+
+```text
+include/efimon/gpu/nvidia-gpu/   shared CUDA/CUPTI headers
+src/efimon/gpu/nvidia-gpu/       NVML/CUPTI preload library
+src/tools/                     daemon and launcher mains
+src/tools/gpu/                 GPU sessions, workers, IPC and PM sampler
+analyzers/                     Python entry points and energy_attribution package
+misc/                          systemd service template
+packaging/                     platform registry, RPM and DEB templates
+benchmarks/                    workloads and capture validation
+results/                       existing captures and analysis outputs
+```
+
+Installed binaries and libraries keep their existing names. Manual collector
+builds still write to `nvidia/` for compatibility with the benchmark script.
+See [analyzers/README.md](analyzers/README.md) for Python entry points and
+compatibility details. Use a fresh Meson build directory after this move.
+
 ## Platform-aware installation layouts
 
 Linux installation layouts are defined in
@@ -66,14 +85,15 @@ helper and does not depend on files from the CUPTI samples directory.
 
 ```bash
 cd ~/klobo
-g++ -std=c++17 -fPIC -shared nvidia/nvidia-process-metrics.cpp \
-  -I/usr/local/cuda/include \
+mkdir -p nvidia
+g++ -std=c++17 -fPIC -shared src/efimon/gpu/nvidia-gpu/process-metrics.cpp \
+  -Iinclude -I/usr/local/cuda/include \
   -L/usr/local/cuda/lib64 \
   -lcupti -lnvidia-ml -lcuda -pthread \
   -o nvidia/libnvidia-process-metrics.so
 
-nvcc -std=c++17 nvidia/pm_sampling_simple.cu \
-  -I/usr/local/cuda/include \
+nvcc -std=c++17 src/tools/gpu/pm-sampling.cu \
+  -Iinclude -I/usr/local/cuda/include \
   -L/usr/local/cuda/lib64 \
   -lcupti -lcuda \
   -Xcompiler -pthread \
@@ -320,13 +340,13 @@ SESSION="results/<session-id>"
 Example:
 SESSION="results/v100-daemon/v100-profile-65daeb50146b1-2b26b-eaf1fc68"
 
-python3 analyze_kernel_pm_metrics.py \
+python3 analyzers/analyze_kernel_pm_metrics.py \
   --pm-samples "$SESSION/pm_sampling.csv" \
   --kernels "$SESSION/kernel_activity.csv" \
   --output-dir "$SESSION/pm-kernel-analysis" \
   --plot
 
-python3 analyze_kernel_energy.py \
+python3 analyzers/analyze_kernel_energy.py \
   --telemetry "$SESSION/gpu_telemetry.csv" \
   --kernels "$SESSION/kernel_activity.csv" \
   --pm-kernel-metrics "$SESSION/pm-kernel-analysis/kernel_pm_metrics.csv" \
@@ -337,14 +357,14 @@ python3 analyze_kernel_energy.py \
 
 ### Fit the multi-session Bayesian energy model
 
-`analyze_bayesian_energy.py` discovers complete profiling sessions below one
+`analyzers/analyze_bayesian_energy.py` discovers complete profiling sessions below one
 directory, aggregates NVML telemetry and CUPTI kernel events into fixed
 windows, and fits a regularized Bayesian energy regression. The final portion
 of every session is reserved as an independent temporal holdout. PM Sampling
 data is not required.
 
 ```bash
-python3 analyze_bayesian_energy.py \
+python3 analyzers/analyze_bayesian_energy.py \
   --sessions-root results/thor \
   --window-ms 200 \
   --output-dir results/thor/bayesian-energy-analysis \
@@ -358,14 +378,14 @@ are retained only as derived diagnostics of the energy posterior.
 
 ### Attribute energy with the Bayesian kernel model
 
-`analyze_bayesian_kernel_energy.py` fits a non-negative Bayesian regression
+`analyzers/analyze_bayesian_kernel_energy.py` fits a non-negative Bayesian regression
 whose explanatory variables are the active durations of each kernel family.
 It then normalizes posterior family contributions inside every time window and
 distributes the measured NVML energy to individual CUPTI events by temporal
 overlap. Its primary result is per-kernel energy with posterior uncertainty.
 
 ```bash
-python3 analyze_bayesian_kernel_energy.py \
+python3 analyzers/analyze_bayesian_kernel_energy.py \
   --telemetry "$SESSION/gpu_telemetry.csv" \
   --kernels "$SESSION/kernel_activity.csv" \
   --window-ms 200 \
@@ -412,10 +432,86 @@ values. `test_power_metrics` and `test_session_energy_metrics` report the
 coverage of both. Session predictive totals assume independent window noise,
 so a systematic per-session bias can still fall outside them.
 
-The three kernel scripts share the `energy_attribution` package: `io` reads
-each CUPTI trace once into numpy columns and `windows` performs vectorized,
-chunked window aggregation. Run its tests with
-`python3 -m pytest energy_attribution/tests`.
+### Package layout
+
+All analyses live in `analyzers/energy_attribution`. Analyzer scripts live
+directly under `analyzers/`; run `python3 analyzers/<script>.py` from the
+repository root or use an installed console command. The root
+`energy_attribution` symlink preserves imports from existing source checkouts.
+
+```
+commands/      one module per console command: parse -> run -> print report
+cli            builds argparse options from the config dataclasses
+api            analyze_*(config) -> typed result (writes nothing)
+               run_*(config)     -> analyze + write outputs
+workflows/     single_session, multisession, cross_gpu, telemetry_* (compute only)
+reporting/     outputs (CSV/JSON/PNG files), text (console), plots, telemetry_plots
+model layer    regression, prediction, allocation, diagnostics, telemetry_model
+data layer     io, windows, families, dataset, sessions, config, units
+```
+
+| Module | Responsibility |
+|---|---|
+| `config` | Immutable, validated settings; the single source of default values |
+| `io` | Read each CUPTI trace once into numpy columns; NVML telemetry; CSV writing |
+| `windows` | Vectorized aggregation of kernel activity and energy into windows |
+| `families` | Kernel-family basis (`__other__` folding) and `KernelScan` statistics |
+| `dataset` | `WindowDataset`, train/test/excluded splits and the design matrix |
+| `sessions` | Discover session folders and aggregate each into windows |
+| `regression` | Non-negative Bayesian regression (Gibbs sampler), posterior summaries |
+| `prediction` | Posterior means, credible/predictive intervals, holdout metrics |
+| `allocation` | Energy split among families, baseline and individual events |
+| `diagnostics` | Identifiability and minimum-window checks |
+| `telemetry_model` | Conjugate regression on NVML counters (`nvidia-energy*`) |
+
+Dependencies only point downwards: the data and model layers never import
+`workflows`, `reporting`, `commands`, `cli` or `api`, and nothing in the
+package imports a root script. `tests/test_architecture.py` enforces this,
+together with CLI/config parity: every config field is exactly one
+`--kebab-case` option with the same default. Progress and warnings use the
+`energy_attribution` logger; the commands print it to stdout.
+
+For local development, install the package and optional plotting/test tools:
+
+```bash
+python3 -m pip install -e '.[plots,test]'
+```
+
+Another Python project can use the models without a command line. `analyze_*`
+returns a typed result without touching the disk; `run_*` also writes the
+same files as the commands:
+
+```python
+from pathlib import Path
+
+from energy_attribution import SingleSessionConfig, analyze_single_session
+
+result = analyze_single_session(
+    SingleSessionConfig(
+        telemetry=Path("capture/gpu_telemetry.csv"),
+        kernels=Path("capture/kernel_activity.csv"),
+        window_ms=200.0,
+    )
+)
+print(result.test_metrics["rmse_w"], result.family_rows[0])
+print(result.summary["baseline_posterior_mean_mj"])
+```
+
+Installation exposes the console commands `nvidia-kernel-energy`,
+`nvidia-kernel-energy-multisession`, `nvidia-kernel-energy-transfer`,
+`nvidia-energy` (telemetry model across sessions) and `nvidia-energy-session`
+(telemetry model for one session). Invalid settings or inputs end with a
+one-line `error:` message and exit status 1. The transfer command accepts
+`--source-label`/`--target-label` for console text and plots; its output file
+names keep the historical `thor_`/`v100_` prefixes.
+
+Run the tests with `python3 -m pytest`. Besides unit tests,
+`test_regression.py` runs all five commands on deterministic synthetic
+sessions and compares every CSV/JSON output with `tests/golden/` (exact
+columns, numbers within 1e-9). After an intended change of results,
+regenerate the golden files with
+`UPDATE_GOLDEN=1 python3 -m pytest energy_attribution/tests/test_regression.py`
+and review the diff.
 
 ### Analyze a shell-script benchmark
 
@@ -428,13 +524,13 @@ RUN="results/<run-id>-compute"
 
 RUN="results/v100-daemon/65d4eb04bece8-384072-2cc325d0"
 
-python3 analyze_kernel_pm_metrics.py \
+python3 analyzers/analyze_kernel_pm_metrics.py \
   --pm-samples "$RUN/pm_sampling_compute.csv" \
   --kernels "$RUN/kernel_activity_compute.csv" \
   --output-dir "$RUN/pm-kernel-analysis" \
   --plot
 
-python3 analyze_kernel_energy.py \
+python3 analyzers/analyze_kernel_energy.py \
   --telemetry "$RUN/gpu_telemetry_compute.csv" \
   --kernels "$RUN/kernel_activity_compute.csv" \
   --pm-kernel-metrics "$RUN/pm-kernel-analysis/kernel_pm_metrics.csv" \

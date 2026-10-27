@@ -23,6 +23,8 @@ configure_file(
   configuration : path_configuration,
 )
 
+project_include = include_directories('include')
+
 if get_option('build_cuda_components')
   cuda_prefix = get_option('nvidia_toolkit_root')
   cuda_target = get_option('nvidia_toolkit_target')
@@ -43,38 +45,7 @@ if get_option('build_cuda_components')
   cuda_stub_libdir = join_paths(cuda_libdir, 'stubs')
   profiler_install_dir = join_paths(get_option('libdir'), 'nvidia-process-metrics')
 
-  shared_library(
-    'nvidia-process-metrics',
-    files('nvidia/nvidia-process-metrics.cpp'),
-    include_directories : [cuda_include, cupti_include],
-    dependencies : dependency('threads'),
-    link_args : ['-L' + cuda_libdir, '-L' + cuda_stub_libdir,
-                 '-L' + cupti_libdir,
-                 '-lcupti', '-lnvidia-ml', '-lcuda'],
-    install_rpath : cupti_libdir,
-    install : true,
-    install_dir : profiler_install_dir,
-  )
-
-  if get_option('enable_pm_sampling')
-    nvcc = find_program(join_paths(cuda_prefix, 'bin', 'nvcc'))
-    custom_target(
-      'pm-sampling-simple',
-      input : files('nvidia/pm_sampling_simple.cu'),
-      output : 'pm_sampling_simple',
-      command : [nvcc, '-std=c++17', '@INPUT@',
-                 '-I' + cuda_include_dir,
-                 '-I' + cupti_include_dir,
-                 '-L' + cupti_libdir, '-L' + cuda_stub_libdir,
-                 '-Xlinker', '-rpath', '-Xlinker', cupti_libdir,
-                 '-lcupti', '-lcuda', '-Xcompiler', '-pthread',
-                 '-o', '@OUTPUT@'],
-      depend_files : files('nvidia/pm_sampling.h', 'nvidia/cuda_api_checks.hpp'),
-      build_by_default : true,
-      install : true,
-      install_dir : profiler_install_dir,
-    )
-  endif
+  subdir('src/efimon/gpu/nvidia-gpu')
 endif
 
-subdir('tools')
+subdir('src/tools')

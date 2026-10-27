@@ -1,0 +1,69 @@
+{
+  "model": "pooled_nonnegative_bayesian_kernel_family_regression",
+  "attribution_mode": "model",
+  "validation": "final temporal fraction held out independently per session",
+  "sessions_root": "/tmp/tmpcadjm_tr/fixture/train",
+  "included_sessions": [
+    "s1-compute",
+    "s2-memory",
+    "s3-mixed"
+  ],
+  "excluded_sessions": [],
+  "window_ms": 200.0,
+  "train_windows": 168,
+  "test_windows": 43,
+  "excluded_short_windows": 3,
+  "min_window_fraction": 0.9,
+  "kernel_events": 4301,
+  "kernel_families": 5,
+  "design_matrix_rank": 6,
+  "design_parameters": 6,
+  "identifiability": {
+    "train_windows": 168,
+    "parameters": 6,
+    "min_windows_per_parameter": 3.0,
+    "required_train_windows": 18,
+    "design_matrix_rank": 6,
+    "underdetermined": false,
+    "families_without_training_activity": [],
+    "test_families_unseen_in_training": [],
+    "test_activity_share_unseen_in_training": 0.0,
+    "aliased_terms": []
+  },
+  "posterior_draws": 2000,
+  "posterior_noise_mean_w": 3.0560035641526073,
+  "train_power_metrics": {
+    "count": 168,
+    "mae_w": 1.6426979911558555,
+    "rmse_w": 2.0967373063276677,
+    "r_squared": 0.9833255280607766,
+    "credible_interval_95_coverage": 0.4107142857142857,
+    "predictive_interval_95_coverage": 0.9940476190476191
+  },
+  "test_power_metrics": {
+    "count": 43,
+    "mae_w": 1.3855855229362672,
+    "rmse_w": 1.7282958624182438,
+    "r_squared": 0.967497007130732,
+    "credible_interval_95_coverage": 0.3953488372093023,
+    "predictive_interval_95_coverage": 1.0
+  },
+  "test_session_energy_metrics": {
+    "sessions": 3,
+    "energy_r_squared": 0.9954406308396716,
+    "mean_absolute_energy_error_pct": 0.6332841321885493,
+    "max_absolute_energy_error_pct": 1.1094362710969123,
+    "total_energy_error_pct": -0.19277021511629253,
+    "credible_interval_95_coverage": 1.0,
+    "predictive_interval_95_coverage": 1.0
+  },
+  "measured_dynamic_energy_mj": 2121315.5169396177,
+  "assignable_dynamic_energy_mj": 2121315.5169396177,
+  "unassigned_dynamic_energy_mj": 0.0,
+  "attributed_posterior_mean_mj": 1266198.6537513803,
+  "baseline_posterior_mean_mj": 855116.8631882373,
+  "baseline_posterior_lower_95_mj": 797163.9978100728,
+  "baseline_posterior_upper_95_mj": 913080.9914086225,
+  "conservation_error_mj": 1.1641532182693481e-10,
+  "important_limitation": "Attribution is probabilistic; concurrent kernel families may not be statistically identifiable."
+}

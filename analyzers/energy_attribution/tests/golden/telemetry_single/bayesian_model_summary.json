@@ -1,0 +1,37 @@
+{
+  "model": "conjugate_bayesian_linear_regression",
+  "interpretation": "Initial within-run diagnostic model; validation across independent runs is required before general use.",
+  "window_ms": 200.0,
+  "complete_windows": 80,
+  "train_windows": 64,
+  "test_windows": 16,
+  "train_fraction": 0.8,
+  "posterior_draws": 4000,
+  "prior_scale": 1.0,
+  "features": [
+    "gpu_utilization_pct",
+    "memory_utilization_pct",
+    "graphics_clock_mhz",
+    "temperature_c",
+    "kernel_active_pct",
+    "log_kernel_count",
+    "kernel_concurrency",
+    "gpu_clock_interaction",
+    "memory_clock_interaction"
+  ],
+  "train_metrics": {
+    "count": 64,
+    "mae_w": 1.5018529562088827,
+    "rmse_w": 1.9114618567888284,
+    "r_squared": 0.9710292620946609,
+    "predictive_interval_95_coverage": 1.0
+  },
+  "test_metrics": {
+    "count": 16,
+    "mae_w": 1.979135202144955,
+    "rmse_w": 2.4818249311337484,
+    "r_squared": 0.9451431513108448,
+    "predictive_interval_95_coverage": 1.0
+  },
+  "test_baseline_mean_power_rmse_w": 16.613535237529156
+}

@@ -1,0 +1,54 @@
+{
+  "model": "multisession_conjugate_bayesian_linear_energy_regression",
+  "target": "measured_energy_j_per_fixed_window",
+  "validation": "final temporal fraction held out independently per session",
+  "sessions_root": "/tmp/tmpcadjm_tr/fixture/train",
+  "session_count": 3,
+  "window_ms": 200.0,
+  "train_fraction_per_session": 0.8,
+  "train_windows": 172,
+  "test_windows": 44,
+  "posterior_draws": 4000,
+  "features": [
+    "gpu_utilization_pct",
+    "memory_utilization_pct",
+    "graphics_clock_mhz",
+    "temperature_c",
+    "kernel_active_pct",
+    "log_kernel_count",
+    "kernel_concurrency",
+    "gpu_clock_interaction",
+    "memory_clock_interaction"
+  ],
+  "session_windows": {
+    "s1-compute": {
+      "windows": 71,
+      "train_windows": 56,
+      "test_windows": 15
+    },
+    "s2-memory": {
+      "windows": 65,
+      "train_windows": 52,
+      "test_windows": 13
+    },
+    "s3-mixed": {
+      "windows": 80,
+      "train_windows": 64,
+      "test_windows": 16
+    }
+  },
+  "temporal_holdout_energy_metrics": {
+    "count": 44,
+    "mae_j_per_window": 0.3700959278430683,
+    "rmse_j_per_window": 0.47527223563776233,
+    "r_squared": 0.9445932039848829,
+    "predictive_interval_95_coverage": 1.0
+  },
+  "derived_temporal_holdout_power_metrics": {
+    "count": 44,
+    "mae_w": 1.8504796392153415,
+    "rmse_w": 2.3763611781888114,
+    "r_squared": 0.9445932039848829,
+    "predictive_interval_95_coverage": 1.0
+  }
+}

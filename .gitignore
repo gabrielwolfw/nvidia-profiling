@@ -2,6 +2,7 @@
 *.d
 *.pyc
 __pycache__/
+*.egg-info/
 
 # Compiled Object files
 *.slo
@@ -70,3 +71,4 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+results/65ce5662fe4a8-8480c-a0776b95/

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvidia-energy-attribution"
+version = "0.1.0"
+description = "Bayesian NVML/CUPTI GPU energy attribution workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.7"]
+test = ["pytest>=8", "pylint>=3"]
+
+# Scripts under analyzers/ delegate to these installed entry points.
+[project.scripts]
+nvidia-kernel-pm-metrics = "energy_attribution.commands.kernel_pm_metrics:main"
+nvidia-kernel-energy-weighted = "energy_attribution.commands.weighted_kernel_energy:main"
+nvidia-pm-sampling-plot = "energy_attribution.commands.pm_sampling_plot:main"
+nvidia-energy = "energy_attribution.commands.telemetry_energy_multisession:main"
+nvidia-energy-session = "energy_attribution.commands.telemetry_energy:main"
+nvidia-kernel-energy = "energy_attribution.commands.kernel_energy:main"
+nvidia-kernel-energy-multisession = "energy_attribution.commands.kernel_energy_multisession:main"
+nvidia-kernel-energy-transfer = "energy_attribution.commands.kernel_energy_transfer:main"
+
+[tool.setuptools.packages.find]
+where = ["analyzers"]
+include = ["energy_attribution*"]
+exclude = ["energy_attribution.tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["analyzers/energy_attribution/tests"]

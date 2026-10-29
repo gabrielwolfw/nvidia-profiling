@@ -82,7 +82,7 @@ baseline evidence and should be rerun against the final tree before completion:
 
 | Check | Earlier result | Remaining coverage |
 | --- | --- | --- |
-| Python regression suite after root script removal | 22 tests passed | Rerun after any subsequent changes |
+| Python regression suite after root script removal | 37 tests passed (2026-10-27) | Rerun after any subsequent changes |
 | Eight relocated script entry points | `--help` worked from `/tmp` | Exercise their actual analysis paths |
 | CUDA-free daemon and launcher | Build and staged installation passed | Does not compile the collector or PM sampler |
 | Native package source archive | CUDA-free build from extracted archive passed | Actual RPM/DEB packages and CUDA-enabled archives |
@@ -124,7 +124,7 @@ meson --version
 
 ```bash
 rg --files -g '*.py' -g '!results/**' -g '!build*/**' -g '!dist/**'
-rg -n 'nvidia/nvidia-process-metrics\.cpp|nvidia/pm_sampling_simple\.cu|tools/nvidia-process-metrics' README.md docs-src packaging src include build_gpus.sh
+rg -n 'nvidia/nvidia-process-metrics\.cpp|nvidia/pm_sampling_simple\.cu|tools/nvidia-process-metrics' README.md docs-src packaging src include
 rg -n 'python3? (analyze_|bayesian_energy_model\.py|plot_pm_sampling\.py)' README.md ANALYSIS_GUIDE.txt analyzers
 readlink energy_attribution
 git diff --check
@@ -151,7 +151,7 @@ Example isolated local check; use fresh paths if these already exist:
 CCACHE_DIR=/tmp/nvidia-audit-ccache meson setup /tmp/nvidia-audit-build -Dbuild_cuda_components=false -Denable_pm_sampling=false
 CCACHE_DIR=/tmp/nvidia-audit-ccache meson compile -C /tmp/nvidia-audit-build
 DESTDIR=/tmp/nvidia-audit-stage meson install -C /tmp/nvidia-audit-build --no-rebuild
-bash -n build_gpus.sh run_pm_sampling_benchmark.sh
+bash -n run_pm_sampling_benchmark.sh
 ```
 
 Expected installed names remain `nvidia-process-metrics-daemon`,
@@ -279,6 +279,7 @@ Use one entry per issue:
 | STYLE-03 | Python style | Medium | `analyzers/` (48 files) | pyink 80 clean, Google `pylintrc` clean | Was 279 pylint findings and 33 unformatted files; now 0 and 0 | Done 2026-10-27; targeted disables with reasons for lazy matplotlib imports and f-string quotes | `pytest`: 22 passed, 86 subtests | Pass |
 | STYLE-04 | Recorded deviations | Low | Whole tree | Deviations listed | Exceptions (Efimon also throws), `from x import Name` imports, missing license headers, 128 unannotated public functions, `pytype` not run, mutable globals in `process-metrics.cpp` | Address with STRUCT-01/02 or accept as local convention | — | Pending |
 | STRUCT-08 | Single responsibility (Python) | Medium | `analyzers/energy_attribution/` | One job per module; functions near 40 lines | `weighted_kernel_energy.py` (742 lines) mixed CSV input, attribution sweep, output and plots; 309-line `create_multisession_plots`; 222- and 180-line `main` functions | Split into `streaming_io.py`, `streaming_attribution.py`, `pm_association.py`, `reporting/weighted_outputs.py`, `reporting/pm_plots.py`; one function per figure | All 40 outputs (CSV, PNG, stdout) byte-identical on capture `65c0d52ac7833-5f090-33231704` and the synthetic telemetry fixture; edge cases match; pytest 22 passed | Pass |
+| TEST-01 | Regression coverage | Medium | `analyzers/energy_attribution/tests/` | Every analyzer command has regression tests | PM association, PM-weighted energy and standalone PM plotting had none | Added `test_pm_and_weighted_energy.py`: hand-derived captures covering PM overlap means, coverage, gaps and rejections; PM-weighted, fallback, threshold, idle and unsorted-input attribution; plot filtering and errors | 15 tests; injected faults in the weight split, PM accumulation and sample-0 discard each fail them; `pytest`: 37 passed, 98 subtests | Pass |
 
 Severity guidance: high blocks functional migration completion; medium needs a
 fix or documented rationale; low covers documentation or maintenance findings.

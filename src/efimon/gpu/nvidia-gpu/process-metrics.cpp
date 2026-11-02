@@ -127,6 +127,10 @@ static std::thread* metrics_thread = nullptr;
 static pid_t profiler_owner_pid = -1;
 // False in processes that only inherited LD_PRELOAD; see ConfigureProcessScope.
 static bool profiler_active = false;
+// True once CUPTI accepted the activity callbacks. Another CUPTI client, such
+// as Nsight Systems or compute-sanitizer, makes the registration fail; the
+// activity API must then not be used again.
+static bool activity_registered = false;
 static int profiler_completion_fd = -1;
 static std::atomic<bool> profiler_failed{false};
 static std::atomic<bool> activity_allocation_error_reported{false};
@@ -1358,11 +1362,18 @@ static void ProfilerStart() {
       cuptiActivityRegisterCallbacks(BufferRequested, BufferCompleted);
 
   if (CUPTI_SUCCESS != cupti_result) {
-    std::fprintf(stderr, "[CUPTI] Failed to register callbacks\n");
-
+    PrintCuptiError(
+        "Cannot register activity callbacks; kernel and memory copy "
+        "activity are disabled. Another CUPTI client (Nsight Systems, Nsight "
+        "Compute or compute-sanitizer) may be attached",
+        cupti_result);
     profiler_failed = true;
+    // NVML telemetry does not depend on CUPTI activity, so keep it.
+    std::printf("\n--- Live GPU telemetry ---\n");
+    StartGpuMetricsSampling();
     return;
   }
+  activity_registered = true;
 
   cupti_result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
 
@@ -1444,12 +1455,14 @@ static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
 static void ProfilerStop() {
   if (!profiler_active || getpid() != profiler_owner_pid) return;
 
-  const CUptiResult flush_result =
-      cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
+  if (activity_registered) {
+    const CUptiResult flush_result =
+        cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
-  if (flush_result != CUPTI_SUCCESS) {
-    PrintCuptiError("Failed to flush activity records", flush_result);
-    profiler_failed = true;
+    if (flush_result != CUPTI_SUCCESS) {
+      PrintCuptiError("Failed to flush activity records", flush_result);
+      profiler_failed = true;
+    }
   }
 
   StopActivityWorker();

@@ -32,6 +32,12 @@ struct SamplerRange
 // Number of samples whose metric values are kept for the log preview.
 constexpr size_t kPreviewSamples = 50;
 
+// The first PM sample can start at a stale timestamp, which makes it last
+// days instead of one sampling interval. It is dropped when it lasts more
+// than this many times the second sample; in every capture inspected the
+// ratio was above 1e9.
+constexpr uint64_t kFirstSampleDurationRatio = 1000;
+
 struct SamplingGapSummary
 {
     size_t validSamples = 0;
@@ -50,6 +56,11 @@ class CuptiProfilerHost
     std::vector<double> m_previewValues;
     std::ofstream m_csvFile;
     std::string m_csvPath;
+    bool m_keepFirstSample = false;
+    bool m_firstSamplePending = false;
+    bool m_firstSampleSeen = false;
+    SamplerRange m_firstRange{};
+    std::vector<double> m_firstValues;
     CUpti_Profiler_Host_Object* m_pHostObject = nullptr;
 
 public:
@@ -173,7 +184,58 @@ public:
         return static_cast<bool>(m_csvFile);
     }
 
+    // Keeps the first sample even when its duration is anomalous.
+    void SetKeepFirstSample(bool keepFirstSample)
+    {
+        m_keepFirstSample = keepFirstSample;
+    }
+
+    // Appends a sample to the CSV. The first sample is held until the second
+    // arrives, so that a first sample with a stale start can be dropped.
     void AppendSample(const SamplerRange& samplerRange, const std::vector<double>& metricValues)
+    {
+        if (!m_firstSampleSeen)
+        {
+            m_firstSampleSeen = true;
+            if (!m_keepFirstSample)
+            {
+                m_firstSamplePending = true;
+                m_firstRange = samplerRange;
+                m_firstValues = metricValues;
+                return;
+            }
+        }
+        else if (m_firstSamplePending)
+        {
+            m_firstSamplePending = false;
+            const uint64_t firstDuration = m_firstRange.endTimestamp - m_firstRange.startTimestamp;
+            const uint64_t secondDuration = samplerRange.endTimestamp - samplerRange.startTimestamp;
+            if (secondDuration > 0 && firstDuration / secondDuration > kFirstSampleDurationRatio)
+            {
+                std::cout << "Discarded sample 0: duration " << firstDuration
+                          << " ns, next sample " << secondDuration << " ns\n";
+            }
+            else
+            {
+                WriteSample(m_firstRange, m_firstValues);
+            }
+        }
+        WriteSample(samplerRange, metricValues);
+    }
+
+    bool CloseSamplesCsv()
+    {
+        // A capture with a single sample keeps it.
+        if (m_firstSamplePending)
+        {
+            m_firstSamplePending = false;
+            WriteSample(m_firstRange, m_firstValues);
+        }
+        return CloseCsvFile();
+    }
+
+private:
+    void WriteSample(const SamplerRange& samplerRange, const std::vector<double>& metricValues)
     {
         const size_t sampleIndex = m_samplerRanges.size();
         m_samplerRanges.push_back(samplerRange);
@@ -196,7 +258,7 @@ public:
         m_csvFile << "\n";
     }
 
-    bool CloseSamplesCsv()
+    bool CloseCsvFile()
     {
         if (!m_csvFile.is_open())
         {
@@ -225,6 +287,7 @@ public:
         return true;
     }
 
+public:
     void PrintSampleRanges()
     {
         if (m_samplerRanges.empty())

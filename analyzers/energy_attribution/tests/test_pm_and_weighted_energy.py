@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from energy_attribution.commands import (  # pylint: disable=wrong-import-position
@@ -410,7 +412,9 @@ class PmSamplingPlotTests(unittest.TestCase):
             self.root / "pm_sampling.csv",
             ["sample", "start_ns", "end_ns", "duration_ns", PM_METRIC, "x/y"],
             [
-                [0, 0, 5_000_000, 5_000_000, 10.0, "n/a"],
+                # A stale first sample, as the collector produced before it
+                # started dropping it at source.
+                [0, 0, 5_000_000_000_000, 5_000_000_000_000, 10.0, "n/a"],
                 [2, 3_000_000, 4_000_000, 1_000_000, 30.0, "n/a"],
                 [1, 2_000_000, 3_000_000, 1_000_000, 20.0, "n/a"],
             ],
@@ -431,6 +435,13 @@ class PmSamplingPlotTests(unittest.TestCase):
             "Rate (per second)",
         )
         self.assertEqual(pm_sampling_plot.get_ylabel("other"), "Metric value")
+
+    def test_first_sample_is_stale_only_for_anomalous_durations(self):
+        stale = pd.DataFrame({"duration_ns": [3_700_000_000_000_000, 634912]})
+        normal = pd.DataFrame({"duration_ns": [634900, 634912]})
+        self.assertTrue(pm_sampling_plot.first_sample_is_stale(stale))
+        self.assertFalse(pm_sampling_plot.first_sample_is_stale(normal))
+        self.assertFalse(pm_sampling_plot.first_sample_is_stale(stale.head(1)))
 
     def test_load_discards_first_sample_and_orders_by_time(self):
         frame = pm_sampling_plot.load_samples(self.samples, False)

@@ -67,6 +67,8 @@ struct ParsedArgs
     // Counter data images rotated between decoding and evaluation. One image
     // evaluates inside the decode thread, as the original sample did.
     size_t decodeImages = 2;
+    // Keep the first sample even when its start timestamp is stale.
+    bool keepFirstSample = false;
     double durationSeconds = 10.0;
     std::string outputPath = "pm_sampling.csv";
     std::vector<std::string> metricNames =
@@ -245,6 +247,7 @@ int PmSamplingCollection(std::vector<uint8_t>& counterAvailibilityImage, ParsedA
     CUPTI_API_CALL(pmSamplingHost.CreateConfigImage(metrics, configImage));
 
     // Rows are streamed while sampling runs, so open the CSV before starting.
+    pmSamplingHost.SetKeepFirstSample(args.keepFirstSample);
     if (!pmSamplingHost.OpenSamplesCsv(args.outputPath, metrics))
     {
         pmSamplingHost.TearDown();
@@ -618,6 +621,7 @@ void PrintHelp()
     printf("    Collection: ./pm_sampling --device/-d <deviceIndex> --duration/-t <seconds> --samplingInterval/-i <samplingInterval> --maxsamples/-s <maxSamples in CounterDataImage> --hardwareBufferSize/-b <hardware buffer size> --decodeImages/-k <counter data images> --metrics/-m <metric1,metric2,...> [--output <csv path>]\n");
     printf("    Default collection duration: 10 seconds.\n");
     printf("    --samplingInterval is in GPU sysclk cycles.\n");
+    printf("    --keepFirstSample keeps sample 0 even when it lasts over %llu times sample 1 (dropped by default).\n", static_cast<unsigned long long>(kFirstSampleDurationRatio));
     printf("    --decodeImages 1 evaluates metrics in the decode thread; 2 to %zu overlap evaluation with decoding (default 2).\n", kMaxDecodeImages);
 }
 
@@ -717,6 +721,10 @@ ParsedArgs parseArgs(int argc, char *argv[])
                 ArgumentError(arg + " exceeds the platform size limit");
             }
             args.hardwareBufferSize = static_cast<size_t>(size);
+        }
+        else if (arg == "--keepFirstSample")
+        {
+            args.keepFirstSample = true;
         }
         else if (arg == "--decodeImages" || arg == "-k")
         {

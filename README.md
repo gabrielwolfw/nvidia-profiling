@@ -258,6 +258,9 @@ filled up and 100,000 was needed. Raise the value when the log's
 (default `2`) overlaps metric evaluation with decoding; `--decodeImages 1`
 evaluates inside the decode thread as before. The log's
 `PM Sampling decode diagnostics` block reports decode and evaluation times.
+The first PM sample can start at a stale timestamp and last days; the sampler
+drops it when it lasts over 1000 times the second sample and logs
+`Discarded sample 0`. Pass `--keepFirstSample` to keep it.
 
 For later source changes, run only `meson compile -C build-daemon` and
 `sudo "$(command -v meson)" install -C build-daemon`. Restart the service if

@@ -7,6 +7,7 @@
 
 #include <cuda.h>
 #include <cupti.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <nvml.h>
 #include <unistd.h>
@@ -586,6 +587,42 @@ static void WriteTelemetryRow(const GpuTelemetrySample& sample) {
   telemetry_file << '\n';
 }
 
+// nvmlDeviceGetTemperature is deprecated in NVML 13. Its replacement,
+// nvmlDeviceGetTemperatureV, is declared from the NVML 12.8 headers on, but
+// the driver provides the symbol, so it is resolved at run time and an older
+// driver keeps using the original call.
+#ifdef nvmlTemperature_v1
+using NvmlGetTemperatureV = nvmlReturn_t (*)(nvmlDevice_t, nvmlTemperature_t*);
+static NvmlGetTemperatureV nvml_get_temperature_v = nullptr;
+#endif
+
+static void ResolveNvmlTemperatureV() {
+#ifdef nvmlTemperature_v1
+  nvml_get_temperature_v = reinterpret_cast<NvmlGetTemperatureV>(
+      dlsym(RTLD_DEFAULT, "nvmlDeviceGetTemperatureV"));
+#endif
+}
+
+static nvmlReturn_t ReadGpuTemperature(unsigned int* temperature_c) {
+#ifdef nvmlTemperature_v1
+  if (nvml_get_temperature_v != nullptr) {
+    nvmlTemperature_t temperature{};
+    temperature.version = nvmlTemperature_v1;
+    temperature.sensorType = NVML_TEMPERATURE_GPU;
+    const nvmlReturn_t result = nvml_get_temperature_v(device, &temperature);
+    if (result != NVML_SUCCESS) return result;
+    // The CSV column is unsigned, as with the original call.
+    if (temperature.temperature < 0) return NVML_ERROR_UNKNOWN;
+    *temperature_c = static_cast<unsigned int>(temperature.temperature);
+    return NVML_SUCCESS;
+  }
+#endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, temperature_c);
+#pragma GCC diagnostic pop
+}
+
 void SampleGpuMetrics() {
   bool timestamp_error_reported = false;
   bool power_error_reported = false;
@@ -623,8 +660,7 @@ void SampleGpuMetrics() {
       timestamp_end_result = cuptiGetTimestamp(&query_end_ns);
     }
 
-    const nvmlReturn_t temperature_result =
-        nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature_c);
+    const nvmlReturn_t temperature_result = ReadGpuTemperature(&temperature_c);
 
     const nvmlReturn_t utilization_result =
         nvmlDeviceGetUtilizationRates(device, &utilization);
@@ -1128,6 +1164,7 @@ static void ProfilerStart() {
 
         if (NVML_SUCCESS == res) {
           nvml_initialized = true;
+          ResolveNvmlTemperatureV();
           std::printf("CUDA device: %d; NVML PCI device: %s\n", device_index,
                       pci_bus_id.c_str());
         } else {

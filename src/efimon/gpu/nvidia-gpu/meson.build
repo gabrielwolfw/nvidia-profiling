@@ -5,7 +5,7 @@ shared_library(
   dependencies : dependency('threads'),
   link_args : ['-L' + cuda_libdir, '-L' + cuda_stub_libdir,
                '-L' + cupti_libdir,
-               '-lcupti', '-lnvidia-ml', '-lcuda'],
+               '-lcupti', '-lnvidia-ml', '-lcuda', '-ldl'],
   install_rpath : cupti_libdir,
   install : true,
   install_dir : profiler_install_dir,

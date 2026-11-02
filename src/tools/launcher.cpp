@@ -285,6 +285,10 @@ pid_t LaunchWithBarrier(const LauncherOptions& options,
           ? options.library_path
           : options.library_path + ":" + existing_preload;
   setenv("LD_PRELOAD", preload.c_str(), 1);
+  // Each launch is a new session even when the launcher itself runs inside a
+  // profiled process, so the target must not inherit that process's owner.
+  unsetenv("NVIDIA_METRICS_OWNER_PID");
+  unsetenv("NVIDIA_METRICS_OWNER_OUTPUT_DIR");
 
   std::vector<char*> arguments;
   for (const auto& argument : options.command) {

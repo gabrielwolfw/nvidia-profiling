@@ -267,12 +267,24 @@ static void LoadProfilerOptions() {
   options.power_samples = GetEnvSwitch("NVIDIA_METRICS_POWER_SAMPLES", true);
 }
 
+// Returns the absolute, normalized form of directory, which identifies a
+// profiling session.
+static std::string SessionDirectory(const std::filesystem::path& directory) {
+  std::error_code error;
+  const std::filesystem::path absolute =
+      std::filesystem::absolute(directory, error);
+  return (error ? directory : absolute).lexically_normal().string();
+}
+
 // Decides whether this process profiles and where it writes. The first
-// process that loads the library owns the top-level output and records its
-// PID in NVIDIA_METRICS_OWNER_PID; a wrapper that execs the target keeps that
-// PID and stays the owner. Other processes inherit LD_PRELOAD but stay idle,
-// so that they never overwrite the owner's CSVs, unless
-// NVIDIA_METRICS_FOLLOW_CHILDREN=1 sends them to children/<pid>.
+// process that loads the library for an output directory owns that session:
+// it records its PID and directory in NVIDIA_METRICS_OWNER_PID and
+// NVIDIA_METRICS_OWNER_OUTPUT_DIR, and exports the absolute directory so that
+// descendants inherit the same session. A wrapper that execs the target keeps
+// the PID and stays the owner. Other processes of the session inherit
+// LD_PRELOAD but stay idle, so that they never overwrite the owner's CSVs,
+// unless NVIDIA_METRICS_FOLLOW_CHILDREN=1 sends them to children/<pid>. A
+// process that asks for a different output directory starts its own session.
 // Returns false when this process must not profile.
 static bool ConfigureProcessScope() {
   const char* configured = std::getenv("NVIDIA_METRICS_OUTPUT_DIR");
@@ -281,9 +293,17 @@ static bool ConfigureProcessScope() {
   }
 
   const std::string own_pid = std::to_string(getpid());
+  const std::string session_directory = SessionDirectory(output_directory);
+  // Files opened at start and files written at exit must land in the same
+  // directory even if the process changes its working directory.
+  output_directory = session_directory;
   const char* owner = std::getenv("NVIDIA_METRICS_OWNER_PID");
-  if (owner == nullptr || owner[0] == '\0') {
+  const char* owner_directory = std::getenv("NVIDIA_METRICS_OWNER_OUTPUT_DIR");
+  if (owner == nullptr || owner[0] == '\0' || owner_directory == nullptr ||
+      session_directory != owner_directory) {
     setenv("NVIDIA_METRICS_OWNER_PID", own_pid.c_str(), 1);
+    setenv("NVIDIA_METRICS_OWNER_OUTPUT_DIR", session_directory.c_str(), 1);
+    setenv("NVIDIA_METRICS_OUTPUT_DIR", session_directory.c_str(), 1);
     return true;
   }
   if (own_pid == owner) return true;

@@ -149,6 +149,12 @@ a wrapper that forks the CUDA program, such as a shell script or `time`, set
 `NVIDIA_METRICS_FOLLOW_CHILDREN=1`; every descendant then writes its own files
 to `children/<pid>/` inside the output directory.
 
+A profiling session is identified by its output directory. A process that
+sets a different `NVIDIA_METRICS_OUTPUT_DIR` starts its own session even when
+it runs below another profiled process, and every launcher command starts a
+new session. All files are written to the directory resolved at start, even
+if the process later changes its working directory.
+
 Each collector behavior can be switched for A/B comparisons:
 
 | Variable | Default | Effect |

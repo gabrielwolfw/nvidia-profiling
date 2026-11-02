@@ -23,6 +23,8 @@
 #include <thread>
 #include <utility>
 
+#include "nvidia-process-metrics-config.hpp"  // NOLINT
+
 namespace nvidia_process_metrics {
 namespace {
 
@@ -31,6 +33,10 @@ constexpr auto kSamplerInterruptTimeout = std::chrono::seconds(5);
 constexpr auto kSamplerTerminateTimeout = std::chrono::seconds(2);
 constexpr auto kSamplerKillTimeout = std::chrono::seconds(2);
 constexpr uint64_t kSamplerSamplingInterval = 1'000'000;
+// Set with the pm_hardware_buffer_mb Meson option; size it from a sweep that
+// reports no hardware buffer overflow in pm_sampling.log.
+constexpr uint64_t kSamplerHardwareBufferBytes =
+    NVIDIA_PROCESS_METRICS_PM_HARDWARE_BUFFER_BYTES;
 std::mutex sampler_fork_mutex;
 
 bool ProcessExists(pid_t pid) { return kill(pid, 0) == 0 || errno == EPERM; }
@@ -318,6 +324,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
   const std::string duration = std::to_string(max_duration_.count());
   const std::string sampling_interval =
       std::to_string(kSamplerSamplingInterval);
+  const std::string hardware_buffer_size =
+      std::to_string(kSamplerHardwareBufferBytes);
   const std::string samples_path =
       "/proc/self/fd/" + std::to_string(inherited_samples_fd);
   const char* sampler_path = sampler_path_.c_str();
@@ -342,7 +350,8 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
 
     execl(sampler_path, sampler_path, "--device", device.c_str(), "--duration",
           duration.c_str(), "--samplingInterval", sampling_interval.c_str(),
-          "--maxsamples", "100000", "--output", samples_path.c_str(),
+          "--maxsamples", "100000", "--hardwareBufferSize",
+          hardware_buffer_size.c_str(), "--output", samples_path.c_str(),
           static_cast<char*>(nullptr));
     _exit(127);
   }

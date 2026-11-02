@@ -11,7 +11,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <vector>
-#include <unordered_map>
+#include <string>
 #include <algorithm>
 
 // CUPTI headers
@@ -21,12 +21,16 @@
 #include <cupti_profiler_target.h>
 #include <cupti_profiler_host.h>
 
+// Only the timestamps of every sample stay in memory; metric values are
+// streamed to the CSV as soon as they are evaluated.
 struct SamplerRange
 {
     uint64_t startTimestamp;
     uint64_t endTimestamp;
-    std::unordered_map<std::string, double> metricValues;
 };
+
+// Number of samples whose metric values are kept for the log preview.
+constexpr size_t kPreviewSamples = 50;
 
 struct SamplingGapSummary
 {
@@ -42,6 +46,10 @@ class CuptiProfilerHost
 {
     std::string m_chipName;
     std::vector<SamplerRange> m_samplerRanges;
+    std::vector<std::string> m_metricNames;
+    std::vector<double> m_previewValues;
+    std::ofstream m_csvFile;
+    std::string m_csvPath;
     CUpti_Profiler_Host_Object* m_pHostObject = nullptr;
 
 public:
@@ -105,11 +113,10 @@ public:
         return CUPTI_SUCCESS;
     }
 
-    CUptiResult EvaluateCounterData(CUpti_PmSampling_Object* pSamplingObject, size_t rangeIndex, std::vector<const char*> metricsList, std::vector<uint8_t>& counterDataImage)
+    // Reads the timestamps of one decoded sample. It uses the PM sampling
+    // object, so only the thread that decodes may call it.
+    static CUptiResult GetSampleRange(CUpti_PmSampling_Object* pSamplingObject, const std::vector<uint8_t>& counterDataImage, size_t rangeIndex, SamplerRange& samplerRange)
     {
-        m_samplerRanges.push_back(SamplerRange{});
-        SamplerRange& samplerRange = m_samplerRanges.back();
-
         CUpti_PmSampling_CounterData_GetSampleInfo_Params getSampleInfoParams = {CUpti_PmSampling_CounterData_GetSampleInfo_Params_STRUCT_SIZE};
         getSampleInfoParams.pPmSamplingObject = pSamplingObject;
         getSampleInfoParams.pCounterDataImage = counterDataImage.data();
@@ -119,8 +126,13 @@ public:
 
         samplerRange.startTimestamp = getSampleInfoParams.startTimestamp;
         samplerRange.endTimestamp = getSampleInfoParams.endTimestamp;
+        return CUPTI_SUCCESS;
+    }
 
-        std::vector<double> metricValues(metricsList.size());
+    // Evaluates the metrics of one decoded sample into metricValues, which
+    // must hold one element per metric. It only uses the host object.
+    CUptiResult EvaluateSample(const std::vector<uint8_t>& counterDataImage, size_t rangeIndex, std::vector<const char*>& metricsList, std::vector<double>& metricValues)
+    {
         CUpti_Profiler_Host_EvaluateToGpuValues_Params evalauateToGpuValuesParams {CUpti_Profiler_Host_EvaluateToGpuValues_Params_STRUCT_SIZE};
         evalauateToGpuValuesParams.pHostObject = m_pHostObject;
         evalauateToGpuValuesParams.pCounterDataImage = counterDataImage.data();
@@ -130,12 +142,87 @@ public:
         evalauateToGpuValuesParams.rangeIndex = rangeIndex;
         evalauateToGpuValuesParams.pMetricValues = metricValues.data();
         CUPTI_API_CALL(cuptiProfilerHostEvaluateToGpuValues(&evalauateToGpuValuesParams));
+        return CUPTI_SUCCESS;
+    }
 
-        for (size_t i = 0; i < metricsList.size(); ++i) {
-            samplerRange.metricValues[metricsList[i]] = metricValues[i];
+    // Opens the samples CSV and writes its header. Rows are appended while
+    // sampling runs, so an interrupted collection keeps what it decoded.
+    bool OpenSamplesCsv(const std::string& filename, const std::vector<const char*>& metricsList)
+    {
+        m_csvPath = filename;
+        m_metricNames.assign(metricsList.begin(), metricsList.end());
+        m_csvFile.open(filename);
+
+        if (!m_csvFile.is_open())
+        {
+            std::cerr << "Error opening CSV file: "
+                    << filename << "\n";
+            return false;
         }
 
-        return CUPTI_SUCCESS;
+        // CSV header
+        m_csvFile << "sample,start_ns,end_ns,duration_ns";
+
+        for (const char* metric : metricsList)
+        {
+            m_csvFile << "," << metric;
+        }
+
+        m_csvFile << "\n";
+        m_csvFile << std::fixed << std::setprecision(6);
+        return static_cast<bool>(m_csvFile);
+    }
+
+    void AppendSample(const SamplerRange& samplerRange, const std::vector<double>& metricValues)
+    {
+        const size_t sampleIndex = m_samplerRanges.size();
+        m_samplerRanges.push_back(samplerRange);
+        if (sampleIndex < kPreviewSamples)
+        {
+            m_previewValues.insert(m_previewValues.end(), metricValues.begin(), metricValues.end());
+        }
+
+        m_csvFile << sampleIndex << ","
+            << samplerRange.startTimestamp << ","
+            << samplerRange.endTimestamp << ","
+            << (samplerRange.endTimestamp -
+                samplerRange.startTimestamp);
+
+        for (const double value : metricValues)
+        {
+            m_csvFile << "," << value;
+        }
+
+        m_csvFile << "\n";
+    }
+
+    bool CloseSamplesCsv()
+    {
+        if (!m_csvFile.is_open())
+        {
+            return false;
+        }
+
+        m_csvFile.flush();
+        if (!m_csvFile)
+        {
+            std::cerr << "Error writing PM Sampling CSV file: "
+                    << m_csvPath << "\n";
+            m_csvFile.close();
+            return false;
+        }
+
+        m_csvFile.close();
+        if (!m_csvFile)
+        {
+            std::cerr << "Error closing PM Sampling CSV file: "
+                    << m_csvPath << "\n";
+            return false;
+        }
+
+        std::cout << "PM Sampling CSV saved to: "
+                << m_csvPath << "\n";
+        return true;
     }
 
     void PrintSampleRanges()
@@ -147,8 +234,8 @@ public:
         }
 
         std::cout << "Total num of Samples: " << m_samplerRanges.size() << "\n";
-        std::cout << "Printing first 50 samples:" << "\n";
-	const size_t samplesToPrint = std::min<size_t>(50, m_samplerRanges.size());
+        std::cout << "Printing first " << kPreviewSamples << " samples:" << "\n";
+        const size_t samplesToPrint = std::min<size_t>(kPreviewSamples, m_samplerRanges.size());
 
         for(size_t sampleIndex = 0; sampleIndex < samplesToPrint; ++sampleIndex)
         {
@@ -156,11 +243,11 @@ public:
             std::cout << "Sample Index: " << sampleIndex << "\n";
             std::cout << "Timestamps -> Start: [" << samplerRange.startTimestamp << "] \tEnd: [" << samplerRange.endTimestamp << "]" << "\n";
             std::cout << "-----------------------------------------------------------------------------------\n";
-            for (const auto& metric : samplerRange.metricValues)
+            for (size_t metricIndex = 0; metricIndex < m_metricNames.size(); ++metricIndex)
             {
                 std::cout << std::fixed << std::setprecision(3);
-                std::cout << std::setw(50) << std::left << metric.first;
-                std::cout << std::setw(30) << std::right << metric.second << "\n";
+                std::cout << std::setw(50) << std::left << m_metricNames[metricIndex];
+                std::cout << std::setw(30) << std::right << m_previewValues[sampleIndex * m_metricNames.size() + metricIndex] << "\n";
             }
             std::cout << "-----------------------------------------------------------------------------------\n\n";
         }
@@ -260,85 +347,6 @@ public:
         std::cout << "Largest reported gap: " << summary.largestGapNs << " ns\n";
     }
 
-    bool SaveSamplesToCsv(
-        const std::string& filename,
-        const std::vector<const char*>& metricsList)
-    {
-        std::ofstream file(filename);
-
-        if (!file.is_open())
-        {
-            std::cerr << "Error opening CSV file: "
-                    << filename << "\n";
-            return false;
-        }
-
-        // CSV header
-        file << "sample,start_ns,end_ns,duration_ns";
-
-        for (const char* metric : metricsList)
-        {
-            file << "," << metric;
-        }
-
-        file << "\n";
-
-        // Samples
-        for (size_t sampleIndex = 0;
-            sampleIndex < m_samplerRanges.size();
-            ++sampleIndex)
-        {
-            const auto& samplerRange =
-                m_samplerRanges[sampleIndex];
-
-            file << sampleIndex << ","
-                << samplerRange.startTimestamp << ","
-                << samplerRange.endTimestamp << ","
-                << (samplerRange.endTimestamp -
-                    samplerRange.startTimestamp);
-
-            for (const char* metric : metricsList)
-            {
-                auto it =
-                    samplerRange.metricValues.find(metric);
-
-                if (it != samplerRange.metricValues.end())
-                {
-                    file << ","
-                        << std::fixed
-                        << std::setprecision(6)
-                        << it->second;
-                }
-                else
-                {
-                    file << ",nan";
-                }
-            }
-
-            file << "\n";
-        }
-
-        file.flush();
-        if (!file)
-        {
-            std::cerr << "Error writing PM Sampling CSV file: "
-                    << filename << "\n";
-            return false;
-        }
-
-        file.close();
-        if (!file)
-        {
-            std::cerr << "Error closing PM Sampling CSV file: "
-                    << filename << "\n";
-            return false;
-        }
-
-        std::cout << "PM Sampling CSV saved to: "
-                << filename << "\n";
-        return true;
-    }
-    
 
     CUptiResult GetSupportedBaseMetrics(std::vector<std::string>& metricsList)
     {
@@ -549,6 +557,9 @@ public:
         setConfigParams.samplingInterval = samplingInterval;
 
         setConfigParams.triggerMode = CUpti_PmSampling_TriggerMode::CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_SYSCLK_INTERVAL;
+        // KEEP_OLDEST is the default; state it because the decode loop
+        // relies on its overflow report instead of silently losing samples.
+        setConfigParams.hwBufferAppendMode = CUPTI_PM_SAMPLING_HARDWARE_BUFFER_APPEND_MODE_KEEP_OLDEST;
         CUPTI_API_CALL(cuptiPmSamplingSetConfig(&setConfigParams));
         return CUPTI_SUCCESS;
     }
@@ -577,14 +588,19 @@ public:
         return result;
     }
 
-    CUptiResult DecodePmSamplingData(std::vector<uint8_t>& counterDataImage)
+    // Decodes pending hardware records. Returns the CUPTI result instead of
+    // throwing because CUPTI_ERROR_OUT_OF_MEMORY reports a hardware buffer
+    // overflow that the caller must record before stopping.
+    CUptiResult DecodePmSamplingData(std::vector<uint8_t>& counterDataImage, CUpti_PmSampling_DecodeStopReason& stopReason, bool& overflow)
     {
         CUpti_PmSampling_DecodeData_Params decodeDataParams = {CUpti_PmSampling_DecodeData_Params_STRUCT_SIZE};
         decodeDataParams.pPmSamplingObject = m_pmSamplerObject;
         decodeDataParams.pCounterDataImage = counterDataImage.data();
         decodeDataParams.counterDataImageSize = counterDataImage.size();
-        CUPTI_API_CALL(cuptiPmSamplingDecodeData(&decodeDataParams));
-        return CUPTI_SUCCESS;
+        const CUptiResult result = cuptiPmSamplingDecodeData(&decodeDataParams);
+        stopReason = decodeDataParams.decodeStopReason;
+        overflow = decodeDataParams.overflow != 0;
+        return result;
     }
 
     CUpti_PmSampling_Object* GetPmSamplerObject()

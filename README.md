@@ -111,10 +111,48 @@ LD_PRELOAD="$PWD/nvidia/libnvidia-process-metrics.so" \
   ./benchmarks/build/bench_compute --duration 10 --warmup 5
 ```
 
-This produces `gpu_telemetry.csv` and `kernel_activity.csv` in the selected
-result directory. Set `NVIDIA_METRICS_WINDOW_MS` to any positive number of
-milliseconds to adjust the kernel-utilization summary window; it defaults to
-`200` when omitted.
+This produces `gpu_telemetry.csv`, `kernel_activity.csv` and
+`memcpy_activity.csv` in the selected result directory. Set
+`NVIDIA_METRICS_WINDOW_MS` to any positive number of milliseconds to adjust the
+kernel-utilization summary window; it defaults to `200` when omitted.
+
+`gpu_telemetry.csv` is written while the target runs and is flushed every
+second. Its last column, `energy_mj`, is the NVML energy counter
+(`nvmlDeviceGetTotalEnergyConsumption`, millijoules since the driver loaded);
+it stays empty on devices that do not support it. `query_start_ns` and
+`query_end_ns` bracket only the power and energy reads; temperature,
+utilization and clock are read just after that interval.
+
+Kernel rows are also appended, unsorted, to `kernel_activity.partial.csv`
+while the target runs. At a normal exit the profiler writes the sorted
+`kernel_activity.csv` and removes the partial file. If the target is killed or
+crashes, the partial file keeps every kernel from completed CUPTI buffers;
+sort it by `start_ns` before analysis.
+
+Only the process that first loads the library is profiled. A wrapper that
+`exec`s the CUDA program, such as `env`, `taskset` or `numactl`, keeps the same
+process, so the CUDA program is profiled. Child processes inherit `LD_PRELOAD`
+but stay idle so that they cannot overwrite the CSV files. When the command is
+a wrapper that forks the CUDA program, such as a shell script or `time`, set
+`NVIDIA_METRICS_FOLLOW_CHILDREN=1`; every descendant then writes its own files
+to `children/<pid>/` inside the output directory.
+
+Each collector behavior can be switched for A/B comparisons:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NVIDIA_METRICS_FOLLOW_CHILDREN` | `0` | `1` profiles descendants into `children/<pid>/` |
+| `NVIDIA_METRICS_ACTIVITY_WORKER` | `1` | `0` parses CUPTI buffers inside the CUPTI callback |
+| `NVIDIA_METRICS_ACTIVITY_POOL_BUFFERS` | `8` | Preallocated 1 MiB CUPTI buffers; `0` allocates one per request |
+| `NVIDIA_METRICS_ACTIVITY_FLUSH_MS` | `1000` | CUPTI periodic flush of full buffers; `0` keeps the CUPTI heuristics |
+| `NVIDIA_METRICS_KERNEL_JOURNAL` | `1` | `0` disables `kernel_activity.partial.csv` |
+| `NVIDIA_METRICS_MEMCPY_CSV` | `1` | `0` disables `memcpy_activity.csv` |
+| `NVIDIA_METRICS_NVML_FIELDS` | `1` | `0` leaves `energy_mj` empty |
+| `NVIDIA_METRICS_POWER_BRACKET` | `1` | `0` brackets all NVML reads with the query timestamps |
+
+Setting every variable in the table to `0` reproduces the earlier collection
+behavior, except that child processes stay idle instead of overwriting the
+CSV files, and the telemetry CSV has an extra empty `energy_mj` column.
 
 ## 3. Run a benchmark with the shell script
 
@@ -173,6 +211,16 @@ On GPUs that do not support PM Sampling, add
 `-Denable_pm_sampling=false` to the `meson setup` command. The daemon will
 still collect GPU telemetry and kernel activity.
 
+The daemon passes a 512 MiB PM hardware buffer to the sampler. Change it with
+`-Dpm_hardware_buffer_mb=<MiB>`; choose the smallest size whose
+`pm_sampling.log` reports `Hardware buffer overflow: no` for your longest
+workload. The sampler streams `pm_sampling.csv` while it decodes and exits
+with status 1 when the hardware buffer overflows, so the session is marked as
+failed instead of silently missing samples. Its `--decodeImages` option
+(default `2`) overlaps metric evaluation with decoding; `--decodeImages 1`
+evaluates inside the decode thread as before. The log's
+`PM Sampling decode diagnostics` block reports decode and evaluation times.
+
 For later source changes, run only `meson compile -C build-daemon` and
 `sudo "$(command -v meson)" install -C build-daemon`. Restart the service if
 the daemon executable changed. The manual binaries from step 2 are separate
@@ -218,6 +266,7 @@ The launcher prints the session and generated paths. Files are stored in:
 /tmp/nvidia-process-metrics/<uid>/<session-id>/
 ├── gpu_telemetry.csv
 ├── kernel_activity.csv
+├── memcpy_activity.csv
 ├── pm_sampling.csv
 └── pm_sampling.log
 ```

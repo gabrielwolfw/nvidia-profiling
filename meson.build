@@ -18,6 +18,10 @@ path_configuration.set_quoted(
   'NVIDIA_PROCESS_METRICS_SAMPLER_PATH',
   join_paths(profiler_libdir, 'pm_sampling_simple'),
 )
+path_configuration.set(
+  'NVIDIA_PROCESS_METRICS_PM_HARDWARE_BUFFER_BYTES',
+  '@0@ULL'.format(get_option('pm_hardware_buffer_mb') * 1024 * 1024),
+)
 configure_file(
   output : 'nvidia-process-metrics-config.hpp',
   configuration : path_configuration,

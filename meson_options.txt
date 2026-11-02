@@ -23,6 +23,14 @@ option(
   description : 'Build and enable CUPTI PM Sampling.',
 )
 option(
+  'pm_hardware_buffer_mb',
+  type : 'integer',
+  min : 1,
+  max : 4096,
+  value : 512,
+  description : 'PM Sampling hardware buffer passed to the sampler, in MiB.',
+)
+option(
   'systemd_unit_dir',
   type : 'string',
   value : '',

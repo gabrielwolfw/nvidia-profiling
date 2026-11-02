@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <nvml.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -22,10 +23,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <exception>
 #include <filesystem>  // NOLINT
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -139,6 +142,13 @@ static std::vector<KernelEvent> parsed_kernels;
 static nvidia_process_metrics::KernelJournal kernel_journal;
 // Written only by the sampling thread until ProfilerStop() joins it.
 static std::ofstream power_samples_file;
+
+// Counters for capture_summary.txt. Each has one writer thread and is read
+// after that thread has joined.
+static uint64_t telemetry_rows = 0;
+static uint64_t power_sample_rows = 0;
+static double telemetry_thread_cpu_ms = 0.0;
+static double activity_thread_cpu_ms = 0.0;
 
 // Every pooled buffer, and the subset that CUPTI does not currently hold.
 static std::mutex activity_pool_mutex;
@@ -774,6 +784,7 @@ static void ReadPowerSamples(PowerSampleReader* reader) {
         !SampleValueAsUnsigned(type, sample.sampleValue, &power_mw)) {
       continue;
     }
+    ++power_sample_rows;
     power_samples_file << sample.timeStamp << ',' << sample.timeStamp * 1000
                        << ',' << power_mw << '\n';
   }
@@ -783,7 +794,21 @@ static void ReadPowerSamples(PowerSampleReader* reader) {
   }
 }
 
+// Returns the CPU time used so far by the calling thread, in milliseconds.
+static double ThreadCpuMilliseconds() {
+  timespec cpu_time{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu_time) != 0) return 0.0;
+  return cpu_time.tv_sec * 1e3 + cpu_time.tv_nsec / 1e6;
+}
+
+// Names the calling thread so that per-thread CPU tools can tell the
+// profiler's threads from the target's. Names are limited to 15 characters.
+static void NameProfilerThread(const char* name) {
+  pthread_setname_np(pthread_self(), name);
+}
+
 void SampleGpuMetrics() {
+  NameProfilerThread("nvpm-telemetry");
   bool timestamp_error_reported = false;
   bool power_error_reported = false;
   bool temperature_error_reported = false;
@@ -863,6 +888,7 @@ void SampleGpuMetrics() {
       const uint64_t timestamp_ns =
           query_start_ns + (query_end_ns - query_start_ns) / 2;
 
+      ++telemetry_rows;
       WriteTelemetryRow({timestamp_ns, query_start_ns, query_end_ns,
                          power_result == NVML_SUCCESS
                              ? std::optional<unsigned int>(power_mw)
@@ -919,6 +945,7 @@ void SampleGpuMetrics() {
       std::this_thread::sleep_for(METRICS_SAMPLE_INTERVAL);
     }
   }
+  telemetry_thread_cpu_ms = ThreadCpuMilliseconds();
 }
 
 void StartGpuMetricsSampling() {
@@ -1138,6 +1165,7 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
 }
 
 static void ProcessCompletedBuffers() {
+  NameProfilerThread("nvpm-activity");
   while (true) {
     CompletedActivityBuffer completed{};
     {
@@ -1145,7 +1173,10 @@ static void ProcessCompletedBuffers() {
       completed_buffers_ready.wait(lock, [] {
         return !completed_buffers.empty() || !activity_worker_accepting;
       });
-      if (completed_buffers.empty()) return;
+      if (completed_buffers.empty()) {
+        activity_thread_cpu_ms = ThreadCpuMilliseconds();
+        return;
+      }
       completed = completed_buffers.front();
       completed_buffers.pop_front();
     }
@@ -1367,6 +1398,49 @@ static void ProfilerStart() {
 /* Profiler shutdown                                */
 /* ------------------------------------------------ */
 
+// Writes capture_summary.txt: one key=value per line with the counters that
+// tell whether a capture is complete, plus the CPU time of the profiler's
+// own threads. CUPTI's internal threads are not included.
+static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
+                                double exit_write_wall_ms) {
+  if (!output_directory_ready) return;
+
+  const std::filesystem::path path = output_directory / "capture_summary.txt";
+  std::ofstream summary(path);
+  if (!summary.is_open()) {
+    std::fprintf(stderr, "[Profiler] Cannot open %s\n", path.c_str());
+    profiler_failed = true;
+    return;
+  }
+
+  const char* journal_state = "disabled";
+  if (kernel_journal.failed()) {
+    journal_state = "failed";
+  } else if (kernel_journal.is_open() || kernel_journal.record_count() > 0) {
+    journal_state = "used";
+  }
+
+  summary << "pid=" << profiler_owner_pid << '\n'
+          << "kernels=" << kernel_count << '\n'
+          << "distinct_kernel_names=" << kernel_names.size() << '\n'
+          << "memcpy_records=" << memcpy_events.size() << '\n'
+          << "dropped_activity_records="
+          << dropped_activity_records.load(std::memory_order_relaxed) << '\n'
+          << "activity_buffers_beyond_pool="
+          << activity_pool_misses.load(std::memory_order_relaxed) << '\n'
+          << "telemetry_rows=" << telemetry_rows << '\n'
+          << "power_sample_rows=" << power_sample_rows << '\n'
+          << "kernel_journal=" << journal_state << '\n'
+          << std::fixed << std::setprecision(3)
+          << "telemetry_thread_cpu_ms=" << telemetry_thread_cpu_ms << '\n'
+          << "activity_thread_cpu_ms=" << activity_thread_cpu_ms << '\n'
+          << "exit_write_cpu_ms=" << exit_write_cpu_ms << '\n'
+          << "exit_write_wall_ms=" << exit_write_wall_ms << '\n'
+          << "profiler_failed="
+          << (profiler_failed.load(std::memory_order_acquire) ? 1 : 0) << '\n';
+  if (!FinishCsvFile(&summary, path)) profiler_failed = true;
+}
+
 static void ProfilerStop() {
   if (!profiler_active || getpid() != profiler_owner_pid) return;
 
@@ -1407,8 +1481,15 @@ static void ProfilerStop() {
           .count());
   nvidia_process_metrics::ActiveTimeWindows windows(window_size_ns);
   uint64_t kernel_count = 0;
+  const double exit_cpu_start_ms = ThreadCpuMilliseconds();
+  const auto exit_wall_start = std::chrono::steady_clock::now();
   const bool activity_saved = SaveActivityCsvFiles(&windows, &kernel_count);
   if (!activity_saved) profiler_failed = true;
+  const double exit_write_cpu_ms = ThreadCpuMilliseconds() - exit_cpu_start_ms;
+  const double exit_write_wall_ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - exit_wall_start)
+          .count();
 
   // The sorted CSV supersedes the journal; keep the journal if it failed.
   if (kernel_journal.is_open()) {
@@ -1425,6 +1506,8 @@ static void ProfilerStop() {
   }
 
   const uint64_t memory_bytes = GetProcessMemory(getpid());
+
+  WriteCaptureSummary(kernel_count, exit_write_cpu_ms, exit_write_wall_ms);
 
   std::printf("\n--- Process Summary ---\n");
 

@@ -152,6 +152,15 @@ a wrapper that forks the CUDA program, such as a shell script or `time`, set
 `NVIDIA_METRICS_FOLLOW_CHILDREN=1`; every descendant then writes its own files
 to `children/<pid>/` inside the output directory.
 
+At exit the profiler also writes `capture_summary.txt`, one `key=value` per
+line: the kernel, memory copy, telemetry and power sample counts,
+`dropped_activity_records` (0 for a complete capture),
+`activity_buffers_beyond_pool`, the journal state, `profiler_failed`, and the
+CPU time of the profiler's own threads (`telemetry_thread_cpu_ms`,
+`activity_thread_cpu_ms`) and of writing the CSVs at exit
+(`exit_write_cpu_ms`, `exit_write_wall_ms`). These threads are named
+`nvpm-telemetry` and `nvpm-activity`; CUPTI's own threads are not included.
+
 A profiling session is identified by its output directory. A process that
 sets a different `NVIDIA_METRICS_OUTPUT_DIR` starts its own session even when
 it runs below another profiled process, and every launcher command starts a
@@ -297,6 +306,7 @@ The launcher prints the session and generated paths. Files are stored in:
 ├── kernel_activity.csv
 ├── gpu_power_samples.csv
 ├── memcpy_activity.csv
+├── capture_summary.txt
 ├── pm_sampling.csv
 └── pm_sampling.log
 ```

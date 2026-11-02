@@ -90,6 +90,9 @@ struct ProfilerOptions {
   bool power_bracket = true;
   // Write the power samples that the driver buffers to gpu_power_samples.csv.
   bool power_samples = true;
+  // Schedule telemetry reads every 50 ms from a fixed start instead of
+  // sleeping 50 ms after each read, which drifts by the read time.
+  bool fixed_period = true;
 };
 
 // Profiler state is global because the library has no entry point other than
@@ -265,6 +268,7 @@ static void LoadProfilerOptions() {
   options.nvml_fields = GetEnvSwitch("NVIDIA_METRICS_NVML_FIELDS", true);
   options.power_bracket = GetEnvSwitch("NVIDIA_METRICS_POWER_BRACKET", true);
   options.power_samples = GetEnvSwitch("NVIDIA_METRICS_POWER_SAMPLES", true);
+  options.fixed_period = GetEnvSwitch("NVIDIA_METRICS_FIXED_PERIOD", true);
 }
 
 // Returns the absolute, normalized form of directory, which identifies a
@@ -792,6 +796,7 @@ void SampleGpuMetrics() {
   InitializePowerSamples(&power_samples);
 
   auto last_flush = std::chrono::steady_clock::now();
+  auto next_sample = last_flush;
 
   while (true) {
     unsigned int power_mw = 0;
@@ -903,7 +908,16 @@ void SampleGpuMetrics() {
     // Take one final sample after the stop request to bracket the tail.
     if (!metrics_sampling.load(std::memory_order_acquire)) break;
 
-    std::this_thread::sleep_for(METRICS_SAMPLE_INTERVAL);
+    if (options.fixed_period) {
+      // Skip the slots missed by a slow read instead of sampling in a burst.
+      const auto now = std::chrono::steady_clock::now();
+      do {
+        next_sample += METRICS_SAMPLE_INTERVAL;
+      } while (next_sample <= now);
+      std::this_thread::sleep_until(next_sample);
+    } else {
+      std::this_thread::sleep_for(METRICS_SAMPLE_INTERVAL);
+    }
   }
 }
 
@@ -1266,11 +1280,11 @@ static void ProfilerStart() {
       "Options: follow_children=%d activity_worker=%d pool_buffers=%zu "
       "flush_ms=%" PRIu32
       " kernel_journal=%d memcpy_csv=%d nvml_fields=%d "
-      "power_bracket=%d power_samples=%d\n",
+      "power_bracket=%d power_samples=%d fixed_period=%d\n",
       options.follow_children, options.activity_worker,
       options.activity_pool_buffers, options.activity_flush_ms,
       options.kernel_journal, options.memcpy_csv, options.nvml_fields,
-      options.power_bracket, options.power_samples);
+      options.power_bracket, options.power_samples, options.fixed_period);
 
   if (!PrepareOutputFiles()) profiler_failed = true;
 

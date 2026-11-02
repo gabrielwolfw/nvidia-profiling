@@ -118,7 +118,8 @@ directory. Set
 kernel-utilization summary window; it defaults to `200` when omitted.
 
 `gpu_telemetry.csv` is written while the target runs and is flushed every
-second. Its last column, `energy_mj`, is the NVML energy counter
+second. Its rows follow a fixed 50 ms schedule; a read that takes longer
+skips the missed slots instead of drifting. Its last column, `energy_mj`, is the NVML energy counter
 (`nvmlDeviceGetTotalEnergyConsumption`, millijoules since the driver loaded);
 it stays empty on devices that do not support it. `query_start_ns` and
 `query_end_ns` bracket only the power and energy reads; temperature,
@@ -170,6 +171,7 @@ Each collector behavior can be switched for A/B comparisons:
 | `NVIDIA_METRICS_NVML_FIELDS` | `1` | `0` leaves `energy_mj` empty |
 | `NVIDIA_METRICS_POWER_BRACKET` | `1` | `0` brackets all NVML reads with the query timestamps |
 | `NVIDIA_METRICS_POWER_SAMPLES` | `1` | `0` disables `gpu_power_samples.csv` |
+| `NVIDIA_METRICS_FIXED_PERIOD` | `1` | `0` sleeps 50 ms after each telemetry read, which drifts |
 
 Setting every variable in the table to `0` reproduces the earlier collection
 behavior, except that child processes stay idle instead of overwriting the

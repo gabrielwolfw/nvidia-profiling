@@ -244,10 +244,13 @@ On GPUs that do not support PM Sampling, add
 `-Denable_pm_sampling=false` to the `meson setup` command. The daemon will
 still collect GPU telemetry and kernel activity.
 
-The daemon passes a 512 MiB PM hardware buffer to the sampler. Change it with
+The daemon passes a 32 MiB PM hardware buffer to the sampler. Change it with
 `-Dpm_hardware_buffer_mb=<MiB>`; choose the smallest size whose
 `pm_sampling.log` reports `Hardware buffer overflow: no` for your longest
-workload. The sampler streams `pm_sampling.csv` while it decodes and exits
+workload. On Thor, with the daemon's 1,000,000-cycle interval, 32 MiB never
+overflowed in three runs and the sampler used 200 MB instead of 680 MB with
+512 MiB; with a 10,000-cycle interval 32 and 128 MiB overflowed and 512 MiB
+was needed. The sampler streams `pm_sampling.csv` while it decodes and exits
 with status 1 when the hardware buffer overflows, so the session is marked as
 failed instead of silently missing samples. Each of its two counter data
 images holds `-Dpm_max_samples=<samples>` samples (default `2000`). On Thor,

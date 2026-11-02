@@ -27,8 +27,8 @@ option(
   type : 'integer',
   min : 1,
   max : 4096,
-  value : 512,
-  description : 'PM Sampling hardware buffer passed to the sampler, in MiB.',
+  value : 32,
+  description : 'PM Sampling hardware buffer passed to the sampler, in MiB; raise it for sampling intervals shorter than the daemon default.',
 )
 option(
   'pm_max_samples',

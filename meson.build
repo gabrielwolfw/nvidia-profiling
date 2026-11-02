@@ -22,6 +22,10 @@ path_configuration.set(
   'NVIDIA_PROCESS_METRICS_PM_HARDWARE_BUFFER_BYTES',
   '@0@ULL'.format(get_option('pm_hardware_buffer_mb') * 1024 * 1024),
 )
+path_configuration.set(
+  'NVIDIA_PROCESS_METRICS_PM_MAX_SAMPLES',
+  '@0@ULL'.format(get_option('pm_max_samples')),
+)
 configure_file(
   output : 'nvidia-process-metrics-config.hpp',
   configuration : path_configuration,

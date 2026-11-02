@@ -37,6 +37,9 @@ constexpr uint64_t kSamplerSamplingInterval = 1'000'000;
 // reports no hardware buffer overflow in pm_sampling.log.
 constexpr uint64_t kSamplerHardwareBufferBytes =
     NVIDIA_PROCESS_METRICS_PM_HARDWARE_BUFFER_BYTES;
+// Set with the pm_max_samples Meson option. Each counter data image holds
+// this many samples, and the sampler allocates one image per decode slot.
+constexpr uint64_t kSamplerMaxSamples = NVIDIA_PROCESS_METRICS_PM_MAX_SAMPLES;
 std::mutex sampler_fork_mutex;
 
 bool ProcessExists(pid_t pid) { return kill(pid, 0) == 0 || errno == EPERM; }
@@ -326,6 +329,7 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
       std::to_string(kSamplerSamplingInterval);
   const std::string hardware_buffer_size =
       std::to_string(kSamplerHardwareBufferBytes);
+  const std::string max_samples = std::to_string(kSamplerMaxSamples);
   const std::string samples_path =
       "/proc/self/fd/" + std::to_string(inherited_samples_fd);
   const char* sampler_path = sampler_path_.c_str();
@@ -350,7 +354,7 @@ bool NvidiaProcessMetricsWorker::StartSampler(std::string* error) {
 
     execl(sampler_path, sampler_path, "--device", device.c_str(), "--duration",
           duration.c_str(), "--samplingInterval", sampling_interval.c_str(),
-          "--maxsamples", "100000", "--hardwareBufferSize",
+          "--maxsamples", max_samples.c_str(), "--hardwareBufferSize",
           hardware_buffer_size.c_str(), "--output", samples_path.c_str(),
           static_cast<char*>(nullptr));
     _exit(127);

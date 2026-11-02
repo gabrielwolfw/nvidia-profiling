@@ -31,6 +31,14 @@ option(
   description : 'PM Sampling hardware buffer passed to the sampler, in MiB.',
 )
 option(
+  'pm_max_samples',
+  type : 'integer',
+  min : 1,
+  max : 1000000,
+  value : 2000,
+  description : 'Samples held by each PM Sampling counter data image; raise it for sampling intervals shorter than the daemon default.',
+)
+option(
   'systemd_unit_dir',
   type : 'string',
   value : '',

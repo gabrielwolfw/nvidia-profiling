@@ -230,7 +230,12 @@ The daemon passes a 512 MiB PM hardware buffer to the sampler. Change it with
 `pm_sampling.log` reports `Hardware buffer overflow: no` for your longest
 workload. The sampler streams `pm_sampling.csv` while it decodes and exits
 with status 1 when the hardware buffer overflows, so the session is marked as
-failed instead of silently missing samples. Its `--decodeImages` option
+failed instead of silently missing samples. Each of its two counter data
+images holds `-Dpm_max_samples=<samples>` samples (default `2000`). On Thor,
+with the daemon's 1,000,000-cycle interval, 2000 samples left no sampling gaps
+and used 573 MB less than 100,000; with a 10,000-cycle interval the images
+filled up and 100,000 was needed. Raise the value when the log's
+`Decode stop reasons` line reports `counter data full` decodes. Its `--decodeImages` option
 (default `2`) overlaps metric evaluation with decoding; `--decodeImages 1`
 evaluates inside the decode thread as before. The log's
 `PM Sampling decode diagnostics` block reports decode and evaluation times.

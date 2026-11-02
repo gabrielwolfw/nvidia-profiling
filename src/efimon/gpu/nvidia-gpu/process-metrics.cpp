@@ -35,16 +35,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "efimon/gpu/nvidia-gpu/kernel-journal.hpp"
+
 // Kernel names are interned: name_id indexes kernel_names.
-struct KernelEvent {
-  uint64_t start;
-  uint64_t end;
-  uint32_t device_id = 0;
-  uint32_t context_id = 0;
-  uint32_t stream_id = 0;
-  uint32_t correlation_id = 0;
-  uint32_t name_id = 0;
-};
+using KernelEvent = nvidia_process_metrics::KernelRecord;
 
 struct MemcpyEvent {
   uint64_t start;
@@ -55,11 +49,6 @@ struct MemcpyEvent {
   uint32_t stream_id;
   uint32_t correlation_id;
   uint8_t copy_kind;
-};
-
-struct ActiveKernelInterval {
-  uint64_t start;
-  uint64_t end;
 };
 
 struct GpuTelemetrySample {
@@ -90,7 +79,8 @@ struct ProfilerOptions {
   size_t activity_pool_buffers = 8;
   // CUPTI periodic flush in milliseconds; 0 keeps the CUPTI heuristics.
   uint32_t activity_flush_ms = 1000;
-  // Stream unsorted kernel rows to kernel_activity.partial.csv during the run.
+  // Append kernels to the binary kernel_activity.journal instead of keeping
+  // them in memory until exit.
   bool kernel_journal = true;
   // Write individual memory copies to memcpy_activity.csv.
   bool memcpy_csv = true;
@@ -103,7 +93,9 @@ struct ProfilerOptions {
 // Profiler state is global because the library has no entry point other than
 // its load-time constructor and exit-time destructor.
 
-// Kernel records live in a deque so that growth never copies existing ones.
+// Kernels kept in memory when the journal is disabled or cannot be written. A
+// deque never copies existing records when it grows. Guarded by
+// activity_mutex.
 static std::deque<KernelEvent> kernels;
 // Deque elements stay in place, so kernel_name_ids can view their characters.
 static std::deque<std::string> kernel_names;
@@ -136,9 +128,10 @@ static std::filesystem::path output_directory(".");
 static bool output_directory_ready = false;
 // Written only by the sampling thread until ProfilerStop() joins it.
 static std::ofstream telemetry_file;
-// Guarded by activity_mutex.
-static std::ofstream kernel_journal_file;
-static uint64_t kernel_journal_rows = 0;
+// Kernels of the CUPTI buffer being parsed and the journal that receives
+// them, both guarded by activity_mutex.
+static std::vector<KernelEvent> parsed_kernels;
+static nvidia_process_metrics::KernelJournal kernel_journal;
 
 // Every pooled buffer, and the subset that CUPTI does not currently hold.
 static std::mutex activity_pool_mutex;
@@ -417,7 +410,7 @@ static std::filesystem::path TelemetryPath() {
 }
 
 static std::filesystem::path KernelJournalPath() {
-  return output_directory / "kernel_activity.partial.csv";
+  return output_directory / "kernel_activity.journal";
 }
 
 // Creates the output directory and opens the files that are written while
@@ -444,17 +437,13 @@ static bool PrepareOutputFiles() {
          "memory_utilization_pct,graphics_clock_mhz,"
          "energy_mj\n";
 
-  if (options.kernel_journal) {
-    kernel_journal_file.open(KernelJournalPath());
-    if (!kernel_journal_file.is_open()) {
-      std::fprintf(stderr,
-                   "[Profiler] Cannot open %s; kernels are kept in memory "
-                   "until exit\n",
-                   KernelJournalPath().c_str());
-      options.kernel_journal = false;
-    } else {
-      kernel_journal_file << KERNEL_CSV_HEADER;
-    }
+  if (options.kernel_journal &&
+      !kernel_journal.Open(KernelJournalPath(), profiler_owner_pid)) {
+    std::fprintf(stderr,
+                 "[Profiler] Cannot open %s; kernels are kept in memory "
+                 "until exit\n",
+                 KernelJournalPath().c_str());
+    options.kernel_journal = false;
   }
   return true;
 }
@@ -463,8 +452,8 @@ static void WriteKernelRow(std::ofstream* file, uint64_t event_id,
                            const KernelEvent& kernel) {
   *file << event_id << ',' << profiler_owner_pid << ',' << kernel.device_id
         << ',' << kernel.context_id << ',' << kernel.stream_id << ','
-        << kernel.correlation_id << ',' << kernel.start << ',' << kernel.end
-        << ',' << (kernel.end - kernel.start) << ','
+        << kernel.correlation_id << ',' << kernel.start_ns << ','
+        << kernel.end_ns << ',' << (kernel.end_ns - kernel.start_ns) << ','
         << escaped_kernel_names[kernel.name_id] << '\n';
 }
 
@@ -495,8 +484,49 @@ static const char* MemcpyKindName(uint8_t copy_kind) {
   }
 }
 
+// Writes every kernel to file in start order and adds it to windows: the
+// journal runs merged with the kernels kept in memory. Returns false if the
+// journal cannot be read.
+static bool WriteSortedKernels(
+    std::ofstream* file, nvidia_process_metrics::ActiveTimeWindows* windows,
+    uint64_t* kernel_count) {
+  std::stable_sort(kernels.begin(), kernels.end(),
+                   [](const KernelEvent& left, const KernelEvent& right) {
+                     return left.start_ns < right.start_ns;
+                   });
+
+  uint64_t event_id = 0;
+  auto write = [&](const KernelEvent& kernel) {
+    WriteKernelRow(file, event_id++, kernel);
+    windows->Add(kernel.start_ns, kernel.end_ns);
+  };
+
+  size_t memory_index = 0;
+  bool journal_read = true;
+  if (kernel_journal.record_count() > 0) {
+    journal_read = kernel_journal.ForEachSorted([&](const KernelEvent& kernel) {
+      while (memory_index < kernels.size() &&
+             kernels[memory_index].start_ns < kernel.start_ns) {
+        write(kernels[memory_index++]);
+      }
+      write(kernel);
+    });
+  }
+  while (memory_index < kernels.size()) write(kernels[memory_index++]);
+
+  windows->Finish();
+  *kernel_count = event_id;
+  if (!journal_read) {
+    std::fprintf(stderr, "[Profiler] Cannot read %s\n",
+                 KernelJournalPath().c_str());
+  }
+  return journal_read;
+}
+
 // Writes the sorted kernel and memory copy CSVs that the analyzers read.
-static bool SaveActivityCsvFiles() {
+static bool SaveActivityCsvFiles(
+    nvidia_process_metrics::ActiveTimeWindows* windows,
+    uint64_t* kernel_count) {
   if (!output_directory_ready) return false;
 
   bool success = true;
@@ -509,8 +539,8 @@ static bool SaveActivityCsvFiles() {
     success = false;
   } else {
     kernels_file << KERNEL_CSV_HEADER;
-    for (size_t index = 0; index < kernels.size(); ++index) {
-      WriteKernelRow(&kernels_file, index, kernels[index]);
+    if (!WriteSortedKernels(&kernels_file, windows, kernel_count)) {
+      success = false;
     }
     if (!FinishCsvFile(&kernels_file, kernels_path)) success = false;
   }
@@ -872,6 +902,9 @@ static uint32_t InternKernelName(const char* name) {
   kernel_names.emplace_back(key);
   escaped_kernel_names.push_back(EscapeCsv(kernel_names.back()));
   kernel_name_ids.emplace(std::string_view(kernel_names.back()), id);
+  // A write error surfaces when the run of this buffer is appended.
+  if (options.kernel_journal)
+    kernel_journal.AppendName(id, kernel_names.back());
   return id;
 }
 
@@ -893,13 +926,17 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
 #endif
               record);
 
-      kernels.push_back({kernel->start, kernel->end, kernel->deviceId,
-                         kernel->contextId, kernel->streamId,
-                         kernel->correlationId,
-                         InternKernelName(kernel->name)});
+      const KernelEvent event{kernel->start,
+                              kernel->end,
+                              kernel->deviceId,
+                              kernel->contextId,
+                              kernel->streamId,
+                              kernel->correlationId,
+                              InternKernelName(kernel->name)};
       if (options.kernel_journal) {
-        WriteKernelRow(&kernel_journal_file, kernel_journal_rows++,
-                       kernels.back());
+        parsed_kernels.push_back(event);
+      } else {
+        kernels.push_back(event);
       }
     }
 
@@ -940,15 +977,16 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
     profiler_failed.store(true, std::memory_order_release);
   }
 
-  if (options.kernel_journal) {
-    kernel_journal_file.flush();
-    if (!kernel_journal_file) {
-      std::fprintf(stderr,
-                   "[Profiler] Cannot write %s; kernels are kept in memory "
-                   "until exit\n",
-                   KernelJournalPath().c_str());
-      options.kernel_journal = false;
-    }
+  // Flush every run so that an abnormal exit keeps the completed buffers.
+  if (options.kernel_journal && !parsed_kernels.empty() &&
+      (!kernel_journal.AppendRun(&parsed_kernels) || !kernel_journal.Flush())) {
+    std::fprintf(stderr,
+                 "[Profiler] Cannot write %s; later kernels are kept in "
+                 "memory until exit\n",
+                 KernelJournalPath().c_str());
+    kernels.insert(kernels.end(), parsed_kernels.begin(), parsed_kernels.end());
+    parsed_kernels.clear();
+    options.kernel_journal = false;
   }
 }
 
@@ -1072,53 +1110,6 @@ uint64_t GetProcessMemory(pid_t pid) {
   }
 
   return 0;
-}
-
-/* ------------------------------------------------ */
-/* Active kernel time inside window                 */
-/* ------------------------------------------------ */
-
-static std::vector<ActiveKernelInterval> MergeActiveKernelIntervals() {
-  std::vector<ActiveKernelInterval> intervals;
-  intervals.reserve(kernels.size());
-
-  for (const auto& kernel : kernels) {
-    if (kernel.start >= kernel.end) continue;
-
-    if (intervals.empty() || kernel.start > intervals.back().end) {
-      intervals.push_back({kernel.start, kernel.end});
-      continue;
-    }
-
-    intervals.back().end = std::max(intervals.back().end, kernel.end);
-  }
-
-  return intervals;
-}
-
-static uint64_t GetActiveKernelTimeInWindow(
-    const std::vector<ActiveKernelInterval>& intervals, size_t& interval_index,
-    uint64_t window_start, uint64_t window_end) {
-  uint64_t total = 0;
-  while (interval_index < intervals.size() &&
-         intervals[interval_index].end <= window_start) {
-    ++interval_index;
-  }
-
-  size_t index = interval_index;
-  while (index < intervals.size() && intervals[index].start < window_end) {
-    const uint64_t overlap_start =
-        std::max(intervals[index].start, window_start);
-    const uint64_t overlap_end = std::min(intervals[index].end, window_end);
-    total += overlap_end - overlap_start;
-
-    if (intervals[index].end > window_end) break;
-
-    ++index;
-    interval_index = index;
-  }
-
-  return total;
 }
 
 /* ------------------------------------------------ */
@@ -1254,28 +1245,31 @@ static void ProfilerStop() {
     profiler_failed = true;
   }
 
-  std::sort(kernels.begin(), kernels.end(),
-            [](const KernelEvent& left, const KernelEvent& right) {
-              return left.start < right.start;
-            });
   std::sort(memcpy_events.begin(), memcpy_events.end(),
             [](const MemcpyEvent& left, const MemcpyEvent& right) {
               return left.start < right.start;
             });
 
-  const bool activity_saved = SaveActivityCsvFiles();
+  const uint64_t window_size_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          metrics_window_duration)
+          .count());
+  nvidia_process_metrics::ActiveTimeWindows windows(window_size_ns);
+  uint64_t kernel_count = 0;
+  const bool activity_saved = SaveActivityCsvFiles(&windows, &kernel_count);
   if (!activity_saved) profiler_failed = true;
 
   // The sorted CSV supersedes the journal; keep the journal if it failed.
-  if (kernel_journal_file.is_open()) {
-    kernel_journal_file.close();
-    if (activity_saved) {
-      std::error_code error;
-      std::filesystem::remove(KernelJournalPath(), error);
-      if (error) {
-        std::fprintf(stderr, "[Profiler] Cannot remove %s: %s\n",
-                     KernelJournalPath().c_str(), error.message().c_str());
-      }
+  if (kernel_journal.is_open()) {
+    if (!activity_saved) {
+      kernel_journal.Flush();
+      std::fprintf(stderr,
+                   "[Profiler] Kept %s; recover it with "
+                   "analyzers/recover_kernel_journal.py\n",
+                   KernelJournalPath().c_str());
+    } else if (!kernel_journal.Remove()) {
+      std::fprintf(stderr, "[Profiler] Cannot remove %s\n",
+                   KernelJournalPath().c_str());
     }
   }
 
@@ -1285,7 +1279,7 @@ static void ProfilerStop() {
 
   std::printf("PID: %d\n", getpid());
 
-  std::printf("Kernels total: %zu\n", kernels.size());
+  std::printf("Kernels total: %" PRIu64 "\n", kernel_count);
   std::printf("Distinct kernel names: %zu\n", kernel_names.size());
 
   const size_t dropped =
@@ -1309,68 +1303,24 @@ static void ProfilerStop() {
   /* Configurable kernel windows                    */
   /* ---------------------------------------------- */
 
-  if (!kernels.empty()) {
-    const std::vector<ActiveKernelInterval> active_kernel_intervals =
-        MergeActiveKernelIntervals();
-
-    const uint64_t window_size_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            metrics_window_duration)
-            .count());
-
-    uint64_t first_kernel_ns = kernels[0].start;
-
-    uint64_t last_kernel_ns = kernels[0].end;
-
-    for (const auto& kernel : kernels) {
-      first_kernel_ns = std::min(first_kernel_ns, kernel.start);
-
-      last_kernel_ns = std::max(last_kernel_ns, kernel.end);
-    }
-
+  if (!windows.empty()) {
     std::printf("\n--- %" PRId64 " ms Kernel Windows ---\n",
                 static_cast<int64_t>(metrics_window_duration.count()));
 
-    uint64_t window_number = 0;
-    size_t active_interval_index = 0;
+    const std::vector<uint64_t> active_ns = windows.ActiveNs();
+    for (size_t window_number = 0; window_number < active_ns.size();
+         ++window_number) {
+      const double relative_start_ms =
+          static_cast<double>(window_number * window_size_ns) / 1e6;
+      const double relative_end_ms = relative_start_ms + window_size_ns / 1e6;
+      const double utilization = static_cast<double>(active_ns[window_number]) /
+                                 static_cast<double>(window_size_ns) * 100.0;
 
-    for (uint64_t window_start = first_kernel_ns; window_start < last_kernel_ns;
-         window_start += window_size_ns) {
-      uint64_t window_end = window_start + window_size_ns;
-
-      const uint64_t current_window_ns = window_end - window_start;
-
-      const uint64_t active_ns = GetActiveKernelTimeInWindow(
-          active_kernel_intervals, active_interval_index, window_start,
-          window_end);
-
-      double utilization = 0.0;
-
-      if (current_window_ns > 0) {
-        utilization = static_cast<double>(active_ns) /
-                      static_cast<double>(current_window_ns) * 100.0;
-      }
-
-      const double relative_start_ms = (window_start - first_kernel_ns) / 1e6;
-
-      const double relative_end_ms = (window_end - first_kernel_ns) / 1e6;
-
-      std::printf("Window %" PRIu64
-                  " [%.0f-%.0f ms] | "
-                  "Active: %.3f ms | "
-                  "Utilization: %.2f %%\n",
-
-                  window_number,
-
-                  relative_start_ms,
-
-                  relative_end_ms,
-
-                  active_ns / 1e6,
-
-                  utilization);
-
-      ++window_number;
+      std::printf(
+          "Window %zu [%.0f-%.0f ms] | Active: %.3f ms | "
+          "Utilization: %.2f %%\n",
+          window_number, relative_start_ms, relative_end_ms,
+          active_ns[window_number] / 1e6, utilization);
     }
   } else {
     std::printf("\nNo kernels captured\n");

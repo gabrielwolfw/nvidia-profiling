@@ -22,6 +22,8 @@ weighted-energy analyzers:
 - `nvidia-kernel-pm-metrics`
 - `nvidia-kernel-energy-weighted`
 - `nvidia-pm-sampling-plot` (requires the `plots` extra)
+- `nvidia-recover-kernel-journal` (writes `kernel_activity.csv` from the
+  `kernel_activity.journal` of an interrupted capture)
 
 All analyzer scripts live in this directory. From the repository root, use
 `python3 analyzers/<script>.py` or an installed console command. The root

@@ -1,6 +1,6 @@
 shared_library(
   'nvidia-process-metrics',
-  files('process-metrics.cpp'),
+  files('process-metrics.cpp') + kernel_journal_sources,
   include_directories : [project_include, cuda_include, cupti_include],
   dependencies : dependency('threads'),
   link_args : ['-L' + cuda_libdir, '-L' + cuda_stub_libdir,

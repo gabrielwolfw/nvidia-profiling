@@ -123,11 +123,15 @@ it stays empty on devices that do not support it. `query_start_ns` and
 `query_end_ns` bracket only the power and energy reads; temperature,
 utilization and clock are read just after that interval.
 
-Kernel rows are also appended, unsorted, to `kernel_activity.partial.csv`
-while the target runs. At a normal exit the profiler writes the sorted
-`kernel_activity.csv` and removes the partial file. If the target is killed or
-crashes, the partial file keeps every kernel from completed CUPTI buffers;
-sort it by `start_ns` before analysis.
+Kernels are not kept in memory: every completed CUPTI buffer is sorted and
+appended to the binary `kernel_activity.journal`. At a normal exit the
+profiler merges the journal into the sorted `kernel_activity.csv` and removes
+the journal. If the target is killed or crashes, the journal keeps every
+kernel from completed CUPTI buffers; recover the CSV with:
+
+```bash
+python3 analyzers/recover_kernel_journal.py "$PWD/results/manual-compute"
+```
 
 Only the process that first loads the library is profiled. A wrapper that
 `exec`s the CUDA program, such as `env`, `taskset` or `numactl`, keeps the same
@@ -145,7 +149,7 @@ Each collector behavior can be switched for A/B comparisons:
 | `NVIDIA_METRICS_ACTIVITY_WORKER` | `1` | `0` parses CUPTI buffers inside the CUPTI callback |
 | `NVIDIA_METRICS_ACTIVITY_POOL_BUFFERS` | `8` | Preallocated 1 MiB CUPTI buffers; `0` allocates one per request |
 | `NVIDIA_METRICS_ACTIVITY_FLUSH_MS` | `1000` | CUPTI periodic flush of full buffers; `0` keeps the CUPTI heuristics |
-| `NVIDIA_METRICS_KERNEL_JOURNAL` | `1` | `0` disables `kernel_activity.partial.csv` |
+| `NVIDIA_METRICS_KERNEL_JOURNAL` | `1` | `0` keeps kernels in memory until exit instead of `kernel_activity.journal` |
 | `NVIDIA_METRICS_MEMCPY_CSV` | `1` | `0` disables `memcpy_activity.csv` |
 | `NVIDIA_METRICS_NVML_FIELDS` | `1` | `0` leaves `energy_mj` empty |
 | `NVIDIA_METRICS_POWER_BRACKET` | `1` | `0` brackets all NVML reads with the query timestamps |

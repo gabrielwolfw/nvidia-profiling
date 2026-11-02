@@ -29,6 +29,18 @@ configure_file(
 
 project_include = include_directories('include')
 
+# The kernel journal has no CUDA dependency, so its test always builds.
+kernel_journal_sources = files('src/efimon/gpu/nvidia-gpu/kernel-journal.cpp')
+test(
+  'kernel-journal',
+  executable(
+    'kernel-journal-test',
+    kernel_journal_sources +
+      files('src/efimon/gpu/nvidia-gpu/tests/kernel-journal-test.cpp'),
+    include_directories : project_include,
+  ),
+)
+
 if get_option('build_cuda_components')
   cuda_prefix = get_option('nvidia_toolkit_root')
   cuda_target = get_option('nvidia_toolkit_target')

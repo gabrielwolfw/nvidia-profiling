@@ -134,8 +134,10 @@ it. Samples taken before the profiler started are skipped.
 Kernels are not kept in memory: every completed CUPTI buffer is sorted and
 appended to the binary `kernel_activity.journal`. At a normal exit the
 profiler merges the journal into the sorted `kernel_activity.csv` and removes
-the journal. If the target is killed or crashes, the journal keeps every
-kernel from completed CUPTI buffers; recover the CSV with:
+the journal. If the journal cannot be written, for example on a full disk,
+the later kernels stay in memory and the CSV still holds every kernel. If the
+target is killed or crashes, the journal keeps every kernel from completed
+CUPTI buffers; recover the CSV with:
 
 ```bash
 python3 analyzers/recover_kernel_journal.py "$PWD/results/manual-compute"

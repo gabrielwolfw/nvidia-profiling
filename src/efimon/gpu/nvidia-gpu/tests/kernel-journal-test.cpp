@@ -7,9 +7,11 @@
 
 #include "efimon/gpu/nvidia-gpu/kernel-journal.hpp"
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -187,6 +189,58 @@ void TestWritesDocumentedLayout() {
   NVPM_VERIFY(journal.Remove());
 }
 
+void TestKeepsRunsWrittenBeforeAWriteError() {
+  const std::filesystem::path path = TemporaryPath("kernel-journal-failure");
+  constexpr size_t kRunRecords = 100;
+  constexpr size_t kRunBytes =
+      1 + 4 + kRunRecords * KernelJournal::kRecordBytes;
+
+  KernelJournal journal;
+  NVPM_VERIFY(journal.Open(path, 1));
+
+  // Let the file grow by exactly two runs, then fail with EFBIG.
+  rlimit original{};
+  NVPM_VERIFY(getrlimit(RLIMIT_FSIZE, &original) == 0);
+  rlimit limited = original;
+  limited.rlim_cur = 16 + 2 * kRunBytes;
+  void (*previous_handler)(int) = std::signal(SIGXFSZ, SIG_IGN);
+  NVPM_VERIFY(setrlimit(RLIMIT_FSIZE, &limited) == 0);
+
+  std::vector<KernelRecord> run(kRunRecords);
+  for (size_t index = 0; index < run.size(); ++index) {
+    run[index].start_ns = 1000 - index;
+    run[index].correlation_id = static_cast<uint32_t>(index);
+  }
+  std::vector<KernelRecord> copy = run;
+  NVPM_VERIFY(journal.AppendRun(&copy));
+  copy = run;
+  NVPM_VERIFY(journal.AppendRun(&copy));
+  copy = run;
+  const bool third_appended = journal.AppendRun(&copy);
+  NVPM_VERIFY(!third_appended);
+  // The caller keeps the records of the failed run.
+  NVPM_VERIFY(copy.size() == kRunRecords);
+  copy = run;
+  NVPM_VERIFY(!journal.AppendRun(&copy));
+  NVPM_VERIFY(journal.failed());
+
+  NVPM_VERIFY(setrlimit(RLIMIT_FSIZE, &original) == 0);
+  std::signal(SIGXFSZ, previous_handler);
+
+  NVPM_VERIFY(journal.record_count() == 2 * kRunRecords);
+  size_t visited = 0;
+  uint64_t previous_start = 0;
+  bool sorted = true;
+  NVPM_VERIFY(journal.ForEachSorted([&](const KernelRecord& record) {
+    sorted = sorted && previous_start <= record.start_ns;
+    previous_start = record.start_ns;
+    ++visited;
+  }));
+  NVPM_VERIFY(visited == 2 * kRunRecords);
+  NVPM_VERIFY(sorted);
+  NVPM_VERIFY(journal.Remove());
+}
+
 void TestEmptyJournalVisitsNothing() {
   const std::filesystem::path path = TemporaryPath("kernel-journal-empty");
   KernelJournal journal;
@@ -230,6 +284,7 @@ void TestWindowsWithoutKernels() {
 int main() {
   nvidia_process_metrics::TestMergesRunsInStartOrder();
   nvidia_process_metrics::TestWritesDocumentedLayout();
+  nvidia_process_metrics::TestKeepsRunsWrittenBeforeAWriteError();
   nvidia_process_metrics::TestEmptyJournalVisitsNothing();
   nvidia_process_metrics::TestWindowsMatchOriginalComputation();
   nvidia_process_metrics::TestWindowsWithoutKernels();

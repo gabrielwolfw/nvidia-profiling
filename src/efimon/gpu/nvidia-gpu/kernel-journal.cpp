@@ -175,8 +175,11 @@ bool KernelJournal::AppendRun(std::vector<KernelRecord>* records) {
   AppendValue(&encoded_, static_cast<uint32_t>(records->size()));
   for (const KernelRecord& record : *records) EncodeRecord(record, &encoded_);
 
+  // A run counts only once it reached the file, so that a later write error
+  // never hides the runs written before it. On failure *records is kept for
+  // the caller to store elsewhere.
   const uint64_t records_offset = offset_ + 1 + sizeof(uint32_t);
-  if (!Write(encoded_.data(), encoded_.size())) return false;
+  if (!Write(encoded_.data(), encoded_.size()) || !Flush()) return false;
 
   runs_.push_back({records_offset, records->size()});
   record_count_ += records->size();
@@ -192,8 +195,8 @@ bool KernelJournal::Flush() {
 
 bool KernelJournal::ForEachSorted(
     const std::function<void(const KernelRecord&)>& visit) {
-  if (!Flush()) return false;
-
+  // Every listed run was flushed by AppendRun(), so the runs are readable
+  // even if a later write failed.
   const int descriptor = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
   if (descriptor < 0) return false;
 

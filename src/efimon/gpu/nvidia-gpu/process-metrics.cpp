@@ -1108,9 +1108,11 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
     profiler_failed.store(true, std::memory_order_release);
   }
 
-  // Flush every run so that an abnormal exit keeps the completed buffers.
+  // AppendRun() flushes every run, so an abnormal exit keeps the completed
+  // buffers. After a write error the kernels of this buffer stay in
+  // parsed_kernels, and the runs already written are still merged at exit.
   if (options.kernel_journal && !parsed_kernels.empty() &&
-      (!kernel_journal.AppendRun(&parsed_kernels) || !kernel_journal.Flush())) {
+      !kernel_journal.AppendRun(&parsed_kernels)) {
     std::fprintf(stderr,
                  "[Profiler] Cannot write %s; later kernels are kept in "
                  "memory until exit\n",

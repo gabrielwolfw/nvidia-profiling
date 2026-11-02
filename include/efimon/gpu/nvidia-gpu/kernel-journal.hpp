@@ -57,17 +57,20 @@ class KernelJournal {
   // Records the name of a kernel id. Returns false after a write error.
   bool AppendName(uint32_t name_id, std::string_view name);
 
-  // Sorts *records by start and appends them as one run. *records keeps its
-  // capacity for reuse. Returns false after a write error.
+  // Sorts *records by start, appends them as one run and flushes the file.
+  // On success *records is cleared and keeps its capacity for reuse. Returns
+  // false after a write error, leaving *records unchanged apart from its
+  // order; every later call also fails.
   bool AppendRun(std::vector<KernelRecord>* records);
 
   // Flushes buffered chunks to the file. Returns false after a write error.
   bool Flush();
 
-  // Flushes the journal, then calls visit for every journaled record in start
-  // order, using memory proportional to the number of runs. Records with the
-  // same start keep the order in which they were appended. Returns false if
-  // the journal cannot be read.
+  // Calls visit for every record of the runs that AppendRun() wrote, in start
+  // order, using memory proportional to the number of runs. This includes the
+  // runs written before a write error. Records with the same start keep the
+  // order in which they were appended. Returns false if the journal cannot
+  // be read.
   bool ForEachSorted(const std::function<void(const KernelRecord&)>& visit);
 
   // Closes and deletes the journal file. Returns false if it cannot be

@@ -111,8 +111,9 @@ LD_PRELOAD="$PWD/nvidia/libnvidia-process-metrics.so" \
   ./benchmarks/build/bench_compute --duration 10 --warmup 5
 ```
 
-This produces `gpu_telemetry.csv`, `kernel_activity.csv` and
-`memcpy_activity.csv` in the selected result directory. Set
+This produces `gpu_telemetry.csv`, `gpu_power_samples.csv`,
+`kernel_activity.csv` and `memcpy_activity.csv` in the selected result
+directory. Set
 `NVIDIA_METRICS_WINDOW_MS` to any positive number of milliseconds to adjust the
 kernel-utilization summary window; it defaults to `200` when omitted.
 
@@ -122,6 +123,13 @@ second. Its last column, `energy_mj`, is the NVML energy counter
 it stays empty on devices that do not support it. `query_start_ns` and
 `query_end_ns` bracket only the power and energy reads; temperature,
 utilization and clock are read just after that interval.
+
+`gpu_power_samples.csv` holds the power samples that the driver buffers
+between two telemetry reads (`nvmlDeviceGetSamples`), with their NVML
+timestamp in microseconds (`nvml_timestamp_us`), the same timestamp in
+nanoseconds (`timestamp_ns`) and `power_mw`. Each driver update appears once,
+whereas `gpu_telemetry.csv` repeats the last value until the driver updates
+it. Samples taken before the profiler started are skipped.
 
 Kernels are not kept in memory: every completed CUPTI buffer is sorted and
 appended to the binary `kernel_activity.journal`. At a normal exit the
@@ -153,10 +161,12 @@ Each collector behavior can be switched for A/B comparisons:
 | `NVIDIA_METRICS_MEMCPY_CSV` | `1` | `0` disables `memcpy_activity.csv` |
 | `NVIDIA_METRICS_NVML_FIELDS` | `1` | `0` leaves `energy_mj` empty |
 | `NVIDIA_METRICS_POWER_BRACKET` | `1` | `0` brackets all NVML reads with the query timestamps |
+| `NVIDIA_METRICS_POWER_SAMPLES` | `1` | `0` disables `gpu_power_samples.csv` |
 
 Setting every variable in the table to `0` reproduces the earlier collection
 behavior, except that child processes stay idle instead of overwriting the
-CSV files, and the telemetry CSV has an extra empty `energy_mj` column.
+CSV files, the telemetry CSV has an extra empty `energy_mj` column, and
+`gpu_power_samples.csv` is not written.
 
 ## 3. Run a benchmark with the shell script
 
@@ -270,6 +280,7 @@ The launcher prints the session and generated paths. Files are stored in:
 /tmp/nvidia-process-metrics/<uid>/<session-id>/
 ├── gpu_telemetry.csv
 ├── kernel_activity.csv
+├── gpu_power_samples.csv
 ├── memcpy_activity.csv
 ├── pm_sampling.csv
 └── pm_sampling.log

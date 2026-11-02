@@ -219,8 +219,9 @@ void PrintResults(const LauncherOptions& options,
   std::cout << "Session: " << session_id << '\n'
             << "State: " << fields[1] << " (" << fields[2] << ")\n"
             << "Results: " << output_dir << '\n';
-  for (const char* filename : {"gpu_telemetry.csv", "kernel_activity.csv",
-                               "pm_sampling.csv", "pm_sampling.log"}) {
+  for (const char* filename :
+       {"gpu_telemetry.csv", "gpu_power_samples.csv", "kernel_activity.csv",
+        "memcpy_activity.csv", "pm_sampling.csv", "pm_sampling.log"}) {
     const auto path = output_dir / filename;
     if (std::filesystem::exists(path)) {
       std::cout << filename << ": " << path << '\n';

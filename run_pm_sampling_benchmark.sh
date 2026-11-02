@@ -33,10 +33,12 @@ RAW_PM_CSV="${RESULTS_DIR}/pm_sampling.csv"
 RAW_TELEMETRY_CSV="${RESULTS_DIR}/gpu_telemetry.csv"
 RAW_KERNEL_CSV="${RESULTS_DIR}/kernel_activity.csv"
 RAW_MEMCPY_CSV="${RESULTS_DIR}/memcpy_activity.csv"
+RAW_POWER_SAMPLES_CSV="${RESULTS_DIR}/gpu_power_samples.csv"
 PM_CSV="${RESULTS_DIR}/pm_sampling_${BENCHMARK_NAME}.csv"
 TELEMETRY_CSV="${RESULTS_DIR}/gpu_telemetry_${BENCHMARK_NAME}.csv"
 KERNEL_CSV="${RESULTS_DIR}/kernel_activity_${BENCHMARK_NAME}.csv"
 MEMCPY_CSV="${RESULTS_DIR}/memcpy_activity_${BENCHMARK_NAME}.csv"
+POWER_SAMPLES_CSV="${RESULTS_DIR}/gpu_power_samples_${BENCHMARK_NAME}.csv"
 
 for required_file in "${PM_SAMPLER}" "${METRICS_LIBRARY}" "${BENCHMARK_EXECUTABLE}"; do
   if [[ ! -e "${required_file}" ]]; then
@@ -136,6 +138,10 @@ if [[ -f "${RAW_MEMCPY_CSV}" ]]; then
   mv -- "${RAW_MEMCPY_CSV}" "${MEMCPY_CSV}"
 fi
 
+if [[ -f "${RAW_POWER_SAMPLES_CSV}" ]]; then
+  mv -- "${RAW_POWER_SAMPLES_CSV}" "${POWER_SAMPLES_CSV}"
+fi
+
 printf '\nRun complete.\n'
 printf 'Results directory: %s\n' "${RESULTS_DIR}"
 printf 'PM Sampling log: %s\n' "${PM_LOG}"
@@ -147,6 +153,9 @@ if [[ -f "${KERNEL_CSV}" ]]; then
 fi
 if [[ -f "${MEMCPY_CSV}" ]]; then
   printf 'CUPTI memory copy CSV: %s\n' "${MEMCPY_CSV}"
+fi
+if [[ -f "${POWER_SAMPLES_CSV}" ]]; then
+  printf 'NVML power samples CSV: %s\n' "${POWER_SAMPLES_CSV}"
 fi
 if [[ -f "${PM_CSV}" ]]; then
   printf 'PM Sampling CSV: %s\n' "${PM_CSV}"

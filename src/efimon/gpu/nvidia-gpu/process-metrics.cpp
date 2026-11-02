@@ -88,6 +88,8 @@ struct ProfilerOptions {
   bool nvml_fields = true;
   // Bracket only the power and energy reads with the query timestamps.
   bool power_bracket = true;
+  // Write the power samples that the driver buffers to gpu_power_samples.csv.
+  bool power_samples = true;
 };
 
 // Profiler state is global because the library has no entry point other than
@@ -132,6 +134,8 @@ static std::ofstream telemetry_file;
 // them, both guarded by activity_mutex.
 static std::vector<KernelEvent> parsed_kernels;
 static nvidia_process_metrics::KernelJournal kernel_journal;
+// Written only by the sampling thread until ProfilerStop() joins it.
+static std::ofstream power_samples_file;
 
 // Every pooled buffer, and the subset that CUPTI does not currently hold.
 static std::mutex activity_pool_mutex;
@@ -260,6 +264,7 @@ static void LoadProfilerOptions() {
   options.memcpy_csv = GetEnvSwitch("NVIDIA_METRICS_MEMCPY_CSV", true);
   options.nvml_fields = GetEnvSwitch("NVIDIA_METRICS_NVML_FIELDS", true);
   options.power_bracket = GetEnvSwitch("NVIDIA_METRICS_POWER_BRACKET", true);
+  options.power_samples = GetEnvSwitch("NVIDIA_METRICS_POWER_SAMPLES", true);
 }
 
 // Decides whether this process profiles and where it writes. The first
@@ -413,6 +418,10 @@ static std::filesystem::path KernelJournalPath() {
   return output_directory / "kernel_activity.journal";
 }
 
+static std::filesystem::path PowerSamplesPath() {
+  return output_directory / "gpu_power_samples.csv";
+}
+
 // Creates the output directory and opens the files that are written while
 // the profiled process runs.
 static bool PrepareOutputFiles() {
@@ -444,6 +453,17 @@ static bool PrepareOutputFiles() {
                  "until exit\n",
                  KernelJournalPath().c_str());
     options.kernel_journal = false;
+  }
+
+  if (options.power_samples) {
+    power_samples_file.open(PowerSamplesPath());
+    if (!power_samples_file.is_open()) {
+      std::fprintf(stderr, "[Profiler] Cannot open CSV file %s\n",
+                   PowerSamplesPath().c_str());
+      options.power_samples = false;
+    } else {
+      power_samples_file << "nvml_timestamp_us,timestamp_ns,power_mw\n";
+    }
   }
   return true;
 }
@@ -653,6 +673,92 @@ static nvmlReturn_t ReadGpuTemperature(unsigned int* temperature_c) {
 #pragma GCC diagnostic pop
 }
 
+// State of the reads of the power samples that the driver buffers.
+struct PowerSampleReader {
+  bool enabled = false;
+  bool error_reported = false;
+  // NVML timestamps are CPU microseconds since the epoch.
+  unsigned long long last_seen_us = 0;  // NOLINT(runtime/int): NVML type.
+  std::vector<nvmlSample_t> samples;
+};
+
+static bool SampleValueAsUnsigned(nvmlValueType_t type,
+                                  const nvmlValue_t& value, uint64_t* result) {
+  switch (type) {
+    case NVML_VALUE_TYPE_UNSIGNED_INT:
+      *result = value.uiVal;
+      return true;
+    case NVML_VALUE_TYPE_UNSIGNED_LONG:
+      *result = value.ulVal;
+      return true;
+    case NVML_VALUE_TYPE_UNSIGNED_LONG_LONG:
+      *result = value.ullVal;
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Sizes the sample buffer and skips the samples taken before the profiler
+// started. A device without power samples disables the reader.
+static void InitializePowerSamples(PowerSampleReader* reader) {
+  reader->enabled = options.power_samples;
+  if (!reader->enabled) return;
+
+  nvmlValueType_t type{};
+  unsigned int count = 0;
+  const nvmlReturn_t result = nvmlDeviceGetSamples(
+      device, NVML_TOTAL_POWER_SAMPLES, 0, &type, &count, nullptr);
+  if (result != NVML_SUCCESS || count == 0) {
+    std::fprintf(stderr, "[NVML] Cannot read buffered power samples: %s\n",
+                 result != NVML_SUCCESS ? nvmlErrorString(result)
+                                        : "empty sample buffer");
+    reader->enabled = false;
+    return;
+  }
+  reader->samples.resize(count);
+  reader->last_seen_us = static_cast<unsigned long long>(  // NOLINT
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+}
+
+// Appends the power samples that the driver buffered since the last call.
+static void ReadPowerSamples(PowerSampleReader* reader) {
+  if (!reader->enabled) return;
+
+  nvmlValueType_t type{};
+  auto count = static_cast<unsigned int>(reader->samples.size());
+  const nvmlReturn_t result = nvmlDeviceGetSamples(
+      device, NVML_TOTAL_POWER_SAMPLES, reader->last_seen_us, &type, &count,
+      reader->samples.data());
+  // NOT_FOUND means that the driver has no newer sample yet.
+  if (result == NVML_ERROR_NOT_FOUND) return;
+  if (result != NVML_SUCCESS) {
+    if (!reader->error_reported) {
+      std::fprintf(stderr, "[NVML] Cannot read buffered power samples: %s\n",
+                   nvmlErrorString(result));
+      reader->error_reported = true;
+    }
+    return;
+  }
+
+  for (unsigned int index = 0; index < count; ++index) {
+    const nvmlSample_t& sample = reader->samples[index];
+    uint64_t power_mw = 0;
+    if (sample.timeStamp <= reader->last_seen_us ||
+        !SampleValueAsUnsigned(type, sample.sampleValue, &power_mw)) {
+      continue;
+    }
+    power_samples_file << sample.timeStamp << ',' << sample.timeStamp * 1000
+                       << ',' << power_mw << '\n';
+  }
+  for (unsigned int index = 0; index < count; ++index) {
+    reader->last_seen_us =
+        std::max(reader->last_seen_us, reader->samples[index].timeStamp);
+  }
+}
+
 void SampleGpuMetrics() {
   bool timestamp_error_reported = false;
   bool power_error_reported = false;
@@ -662,6 +768,8 @@ void SampleGpuMetrics() {
   bool energy_error_reported = false;
   bool energy_enabled = options.nvml_fields;
   bool write_error_reported = false;
+  PowerSampleReader power_samples;
+  InitializePowerSamples(&power_samples);
 
   auto last_flush = std::chrono::steady_clock::now();
 
@@ -701,6 +809,8 @@ void SampleGpuMetrics() {
     if (!options.power_bracket) {
       timestamp_end_result = cuptiGetTimestamp(&query_end_ns);
     }
+
+    ReadPowerSamples(&power_samples);
 
     if (power_result != NVML_SUCCESS && !power_error_reported) {
       std::fprintf(stderr, "[NVML] Cannot sample power: %s\n",
@@ -760,6 +870,7 @@ void SampleGpuMetrics() {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_flush >= TELEMETRY_FLUSH_INTERVAL) {
       telemetry_file.flush();
+      if (power_samples.enabled) power_samples_file.flush();
       last_flush = now;
     }
     if (!telemetry_file && !write_error_reported) {
@@ -1133,11 +1244,11 @@ static void ProfilerStart() {
       "Options: follow_children=%d activity_worker=%d pool_buffers=%zu "
       "flush_ms=%" PRIu32
       " kernel_journal=%d memcpy_csv=%d nvml_fields=%d "
-      "power_bracket=%d\n",
+      "power_bracket=%d power_samples=%d\n",
       options.follow_children, options.activity_worker,
       options.activity_pool_buffers, options.activity_flush_ms,
       options.kernel_journal, options.memcpy_csv, options.nvml_fields,
-      options.power_bracket);
+      options.power_bracket, options.power_samples);
 
   if (!PrepareOutputFiles()) profiler_failed = true;
 
@@ -1242,6 +1353,10 @@ static void ProfilerStop() {
 
   if (telemetry_file.is_open() &&
       !FinishCsvFile(&telemetry_file, TelemetryPath())) {
+    profiler_failed = true;
+  }
+  if (power_samples_file.is_open() &&
+      !FinishCsvFile(&power_samples_file, PowerSamplesPath())) {
     profiler_failed = true;
   }
 

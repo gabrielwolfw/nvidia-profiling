@@ -96,6 +96,10 @@ struct ProfilerOptions {
   // Schedule telemetry reads every 50 ms from a fixed start instead of
   // sleeping 50 ms after each read, which drifts by the read time.
   bool fixed_period = true;
+  // Period of the reads that need not run every 50 ms: the energy counter,
+  // temperature, utilization and the driver's power samples. 0 reads them at
+  // every telemetry row.
+  uint32_t slow_read_ms = 200;
 };
 
 // Profiler state is global because the library has no entry point other than
@@ -183,6 +187,8 @@ constexpr size_t DEFAULT_ACTIVITY_POOL_BUFFERS = 8;
 constexpr size_t MAX_ACTIVITY_POOL_BUFFERS = 256;
 constexpr size_t MIN_QUEUED_ACTIVITY_BUFFERS = 2;
 constexpr uint32_t DEFAULT_ACTIVITY_FLUSH_MS = 1000;
+constexpr uint32_t DEFAULT_SLOW_READ_MS = 200;
+constexpr uint32_t MAX_SLOW_READ_MS = 10000;
 
 constexpr char KERNEL_CSV_HEADER[] =
     "event_id,pid,device_id,context_id,stream_id,correlation_id,"
@@ -283,6 +289,8 @@ static void LoadProfilerOptions() {
   options.power_bracket = GetEnvSwitch("NVIDIA_METRICS_POWER_BRACKET", true);
   options.power_samples = GetEnvSwitch("NVIDIA_METRICS_POWER_SAMPLES", true);
   options.fixed_period = GetEnvSwitch("NVIDIA_METRICS_FIXED_PERIOD", true);
+  options.slow_read_ms = static_cast<uint32_t>(GetEnvInteger(
+      "NVIDIA_METRICS_SLOW_READ_MS", DEFAULT_SLOW_READ_MS, MAX_SLOW_READ_MS));
 }
 
 // Returns the absolute, normalized form of directory, which identifies a
@@ -829,11 +837,28 @@ void SampleGpuMetrics() {
   auto last_flush = std::chrono::steady_clock::now();
   auto next_sample = last_flush;
 
+  // On a V100 the energy counter costs as much CPU as the power read, and the
+  // other slow reads half as much again. Temperature and utilization, which
+  // the driver averages anyway, repeat their last value in the rows between
+  // two reads, so every row stays complete; energy is left empty there so
+  // that no difference is computed from a stale counter.
+  const auto slow_read_period = std::chrono::milliseconds(options.slow_read_ms);
+  auto next_slow_read = last_flush;
+  unsigned int temperature_c = 0;
+  nvmlUtilization_t utilization{};
+  nvmlReturn_t temperature_result = NVML_ERROR_UNINITIALIZED;
+  nvmlReturn_t utilization_result = NVML_ERROR_UNINITIALIZED;
+
   while (true) {
     unsigned int power_mw = 0;
-    unsigned int temperature_c = 0;
     unsigned int graphics_clock_mhz = 0;
-    nvmlUtilization_t utilization{};
+
+    // The last row after the stop request always reads everything.
+    const auto poll_time = std::chrono::steady_clock::now();
+    const bool slow_read = options.slow_read_ms == 0 ||
+                           poll_time >= next_slow_read ||
+                           !metrics_sampling.load(std::memory_order_acquire);
+    if (slow_read) next_slow_read = poll_time + slow_read_period;
 
     uint64_t query_start_ns = 0;
     uint64_t query_end_ns = 0;
@@ -846,7 +871,8 @@ void SampleGpuMetrics() {
         nvmlDeviceGetPowerUsage(device, &power_mw);
 
     const std::optional<uint64_t> energy_mj =
-        ReadEnergyCounter(&energy_enabled, &energy_error_reported);
+        slow_read ? ReadEnergyCounter(&energy_enabled, &energy_error_reported)
+                  : std::nullopt;
 
     // The energy model integrates power, so keep the slower driver-averaged
     // counters outside the interval that dates the power sample.
@@ -854,10 +880,10 @@ void SampleGpuMetrics() {
       timestamp_end_result = cuptiGetTimestamp(&query_end_ns);
     }
 
-    const nvmlReturn_t temperature_result = ReadGpuTemperature(&temperature_c);
-
-    const nvmlReturn_t utilization_result =
-        nvmlDeviceGetUtilizationRates(device, &utilization);
+    if (slow_read) {
+      temperature_result = ReadGpuTemperature(&temperature_c);
+      utilization_result = nvmlDeviceGetUtilizationRates(device, &utilization);
+    }
 
     const nvmlReturn_t clock_result = nvmlDeviceGetClockInfo(
         device, NVML_CLOCK_GRAPHICS, &graphics_clock_mhz);
@@ -866,7 +892,9 @@ void SampleGpuMetrics() {
       timestamp_end_result = cuptiGetTimestamp(&query_end_ns);
     }
 
-    ReadPowerSamples(&power_samples);
+    // The driver keeps over two seconds of samples, so reading them at the
+    // slow period loses none.
+    if (slow_read) ReadPowerSamples(&power_samples);
 
     if (power_result != NVML_SUCCESS && !power_error_reported) {
       std::fprintf(stderr, "[NVML] Cannot sample power: %s\n",
@@ -1317,11 +1345,13 @@ static void ProfilerStart() {
       "Options: follow_children=%d activity_worker=%d pool_buffers=%zu "
       "flush_ms=%" PRIu32
       " kernel_journal=%d memcpy_csv=%d nvml_fields=%d "
-      "power_bracket=%d power_samples=%d fixed_period=%d\n",
+      "power_bracket=%d power_samples=%d fixed_period=%d "
+      "slow_read_ms=%" PRIu32 "\n",
       options.follow_children, options.activity_worker,
       options.activity_pool_buffers, options.activity_flush_ms,
       options.kernel_journal, options.memcpy_csv, options.nvml_fields,
-      options.power_bracket, options.power_samples, options.fixed_period);
+      options.power_bracket, options.power_samples, options.fixed_period,
+      options.slow_read_ms);
 
   if (!PrepareOutputFiles()) profiler_failed = true;
 

@@ -149,6 +149,10 @@ def load_kernels(path, load_event_ids=False, chunk_rows=KERNEL_CHUNK_ROWS):
     has_event_ids = load_event_ids and "event_id" in header
     if has_event_ids:
         columns.append("event_id")
+    has_device_ids = "device_id" in header
+    if has_device_ids:
+        columns.append("device_id")
+    device_ids = set()
 
     code_by_name = {}
     names = []
@@ -173,6 +177,8 @@ def load_kernels(path, load_event_ids=False, chunk_rows=KERNEL_CHUNK_ROWS):
             if mask is not None:
                 valid &= mask
         skipped += int(len(valid) - valid.sum())
+        if has_device_ids:
+            device_ids.update(chunk["device_id"].to_numpy()[valid])
 
         chunk_codes, chunk_names = pd.factorize(name_values[valid])
         global_codes = np.empty(len(chunk_names), dtype=np.int32)
@@ -204,6 +210,12 @@ def load_kernels(path, load_event_ids=False, chunk_rows=KERNEL_CHUNK_ROWS):
         event_ids=concatenate(event_ids, np.int64) if has_event_ids else None,
         skipped=skipped,
     )
+    if len(device_ids) > 1:
+        # The telemetry measures a single GPU.
+        raise ValueError(
+            "Kernel rows come from devices "
+            f"{', '.join(sorted(device_ids))}; capture one device per run"
+        )
     if len(table) > 1 and np.any(np.diff(table.start_ns) < 0):
         raise ValueError(
             "Kernel rows must be sorted by start_ns for streaming analysis"

@@ -293,6 +293,17 @@ void TestWindowsMatchOriginalComputation() {
   }
 }
 
+void TestWindowsIgnoreInvalidTimestamps() {
+  // An incomplete record from a forced flush, then a valid kernel late on.
+  ActiveTimeWindows windows(200'000'000);
+  windows.Add(0, 0);
+  windows.Add(1'000'000'000'000, 1'000'000'100'000);
+  windows.Add(1'000'000'200'000, 5);
+  windows.Finish();
+  NVPM_VERIFY(windows.first_start_ns() == 1'000'000'000'000);
+  NVPM_VERIFY(windows.ActiveNs() == std::vector<uint64_t>{100'000});
+}
+
 void TestWindowsWithoutKernels() {
   ActiveTimeWindows windows(200);
   windows.Finish();
@@ -310,6 +321,7 @@ int main() {
   nvidia_process_metrics::TestCsvRowMatchesStreamFormatting();
   nvidia_process_metrics::TestEmptyJournalVisitsNothing();
   nvidia_process_metrics::TestWindowsMatchOriginalComputation();
+  nvidia_process_metrics::TestWindowsIgnoreInvalidTimestamps();
   nvidia_process_metrics::TestWindowsWithoutKernels();
   if (nvidia_process_metrics::failures != 0) {
     std::fprintf(stderr, "%d checks failed\n",

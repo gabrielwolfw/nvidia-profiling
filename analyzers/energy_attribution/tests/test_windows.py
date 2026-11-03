@@ -177,6 +177,19 @@ class LoaderTests(unittest.TestCase):
         )
         self.assertEqual(counts["a"], 1)
 
+    def test_kernels_of_several_devices_are_rejected(self):
+        rows = [
+            ["device_id", "start_ns", "end_ns", "kernel_name"],
+            ["0", "10", "20", "a"],
+            ["1", "11", "21", "a"],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "kernels.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerows(rows)
+            with self.assertRaisesRegex(ValueError, "devices 0, 1"):
+                load_kernels(path, chunk_rows=1)
+
 
 class IdentifiabilityTests(unittest.TestCase):
     """Identifiability checks on the design matrix."""

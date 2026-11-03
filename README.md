@@ -153,6 +153,14 @@ CUPTI buffers; recover the CSV with:
 python3 analyzers/recover_kernel_journal.py "$PWD/results/manual-compute"
 ```
 
+Only kernels and memory copies of the device selected by
+`NVIDIA_METRICS_DEVICE` are written, because NVML measures the power of that
+device only. Records with a zero timestamp or an end before their start, which
+a forced flush can return for work that did not complete, are also left out.
+`capture_summary.txt` counts both (`other_device_activity_records`,
+`invalid_activity_records`). The analyzers reject a kernel CSV that holds
+several devices.
+
 Only the process that first loads the library is profiled. A wrapper that
 `exec`s the CUDA program, such as `env`, `taskset` or `numactl`, keeps the same
 process, so the CUDA program is profiled. Child processes inherit `LD_PRELOAD`
@@ -163,7 +171,8 @@ to `children/<pid>/` inside the output directory.
 
 At exit the profiler also writes `capture_summary.txt`, one `key=value` per
 line: the kernel, memory copy, telemetry and power sample counts,
-`dropped_activity_records` (0 for a complete capture),
+`dropped_activity_records` (0 for a complete capture), the records left out
+(`invalid_activity_records`, `other_device_activity_records`),
 `activity_buffers_beyond_pool`, the journal state, `profiler_failed`, and the
 CPU time of the profiler's own threads (`telemetry_thread_cpu_ms`,
 `activity_thread_cpu_ms`) and of writing the CSVs at exit
@@ -191,9 +200,10 @@ Each collector behavior can be switched for A/B comparisons:
 | `NVIDIA_METRICS_POWER_SAMPLES` | `1` | `0` disables `gpu_power_samples.csv` |
 | `NVIDIA_METRICS_FIXED_PERIOD` | `1` | `0` sleeps 50 ms after each telemetry read, which drifts |
 | `NVIDIA_METRICS_SLOW_READ_MS` | `200` | Period of the energy, temperature, utilization and driver power sample reads; `0` reads them for every row |
+| `NVIDIA_METRICS_ALL_DEVICES` | `0` | `1` keeps the kernels and memory copies of every device |
 
-Setting every variable in the table to `0` reproduces the earlier collection
-behavior, except that child processes stay idle instead of overwriting the
+Setting every variable in the table to `0`, and `NVIDIA_METRICS_ALL_DEVICES`
+to `1`, reproduces the earlier collection behavior, except that child processes stay idle instead of overwriting the
 CSV files, the telemetry CSV has an extra empty `energy_mj` column, and
 `gpu_power_samples.csv` is not written.
 

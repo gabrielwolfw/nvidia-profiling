@@ -100,6 +100,9 @@ struct ProfilerOptions {
   // temperature, utilization and the driver's power samples. 0 reads them at
   // every telemetry row.
   uint32_t slow_read_ms = 200;
+  // Keep kernels and memory copies of every device, not only of the device
+  // whose power NVML reads.
+  bool all_devices = false;
 };
 
 // Profiler state is global because the library has no entry point other than
@@ -118,6 +121,13 @@ static std::mutex activity_mutex;
 static std::atomic<size_t> dropped_activity_records{0};
 static std::atomic<bool> dropped_records_query_failed{false};
 static std::atomic<bool> activity_record_error_reported{false};
+// Records left out of the CSVs: incomplete ones, whose timestamps are zero or
+// out of order, and those of a device other than measured_device_id.
+static std::atomic<size_t> invalid_activity_records{0};
+static std::atomic<size_t> other_device_activity_records{0};
+// CUDA device ordinal measured by NVML, as in CUPTI's deviceId; -1 keeps the
+// records of every device.
+static int64_t measured_device_id = -1;
 
 static uint64_t bytes_h2d = 0;
 static uint64_t bytes_d2h = 0;
@@ -293,6 +303,7 @@ static void LoadProfilerOptions() {
   options.fixed_period = GetEnvSwitch("NVIDIA_METRICS_FIXED_PERIOD", true);
   options.slow_read_ms = static_cast<uint32_t>(GetEnvInteger(
       "NVIDIA_METRICS_SLOW_READ_MS", DEFAULT_SLOW_READ_MS, MAX_SLOW_READ_MS));
+  options.all_devices = GetEnvSwitch("NVIDIA_METRICS_ALL_DEVICES", false);
 }
 
 // Returns the absolute, normalized form of directory, which identifies a
@@ -1116,6 +1127,24 @@ static uint32_t InternKernelName(const char* name) {
   return id;
 }
 
+// Returns whether a kernel or memory copy record goes to the CSVs. A forced
+// flush can return records that are not complete, with zero timestamps, which
+// would move the start of the kernel windows; records of another device would
+// be attributed the energy of the measured one.
+static bool KeepActivityRecord(uint32_t device_id, uint64_t start_ns,
+                               uint64_t end_ns) {
+  if (start_ns == 0 || end_ns < start_ns) {
+    invalid_activity_records.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  if (measured_device_id >= 0 &&
+      device_id != static_cast<uint64_t>(measured_device_id)) {
+    other_device_activity_records.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  return true;
+}
+
 // Copies the needed fields of every record in a completed CUPTI buffer.
 static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
   std::lock_guard<std::mutex> lock(activity_mutex);
@@ -1133,6 +1162,9 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
           reinterpret_cast<CUpti_ActivityKernel10*>(
 #endif
               record);
+      if (!KeepActivityRecord(kernel->deviceId, kernel->start, kernel->end)) {
+        continue;
+      }
 
       const KernelEvent event{kernel->start,
                               kernel->end,
@@ -1151,6 +1183,9 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
     /* Memory copies */
     if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
       auto* copy = reinterpret_cast<CUpti_ActivityMemcpy*>(record);
+      if (!KeepActivityRecord(copy->deviceId, copy->start, copy->end)) {
+        continue;
+      }
 
       switch (copy->copyKind) {
         case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
@@ -1348,12 +1383,12 @@ static void ProfilerStart() {
       "flush_ms=%" PRIu32
       " kernel_journal=%d memcpy_csv=%d nvml_fields=%d "
       "power_bracket=%d power_samples=%d fixed_period=%d "
-      "slow_read_ms=%" PRIu32 "\n",
+      "slow_read_ms=%" PRIu32 " all_devices=%d\n",
       options.follow_children, options.activity_worker,
       options.activity_pool_buffers, options.activity_flush_ms,
       options.kernel_journal, options.memcpy_csv, options.nvml_fields,
       options.power_bracket, options.power_samples, options.fixed_period,
-      options.slow_read_ms);
+      options.slow_read_ms, options.all_devices);
 
   if (!PrepareOutputFiles()) profiler_failed = true;
 
@@ -1362,6 +1397,7 @@ static void ProfilerStart() {
   int device_index = 0;
 
   if (GetConfiguredDeviceIndex(&device_index)) {
+    if (!options.all_devices) measured_device_id = device_index;
     std::string pci_bus_id;
     if (GetCudaPciBusId(device_index, &pci_bus_id)) {
       nvmlReturn_t res = nvmlInit_v2();
@@ -1471,6 +1507,11 @@ static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
           << "memcpy_records=" << memcpy_events.size() << '\n'
           << "dropped_activity_records="
           << dropped_activity_records.load(std::memory_order_relaxed) << '\n'
+          << "invalid_activity_records="
+          << invalid_activity_records.load(std::memory_order_relaxed) << '\n'
+          << "other_device_activity_records="
+          << other_device_activity_records.load(std::memory_order_relaxed)
+          << '\n'
           << "activity_buffers_beyond_pool="
           << activity_pool_misses.load(std::memory_order_relaxed) << '\n'
           << "telemetry_rows=" << telemetry_rows << '\n'

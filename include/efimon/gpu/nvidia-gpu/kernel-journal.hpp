@@ -118,6 +118,8 @@ void AppendKernelCsvRow(uint64_t event_id, int64_t pid,
 // Accumulates the union of kernel intervals into fixed windows that start at
 // the first kernel, without storing the kernels. Records must arrive in start
 // order. Intervals that touch are merged, and empty intervals are ignored.
+// Records with a zero start or an end before the start are not counted, so
+// they cannot move the first window.
 class ActiveTimeWindows {
  public:
   explicit ActiveTimeWindows(uint64_t window_ns);

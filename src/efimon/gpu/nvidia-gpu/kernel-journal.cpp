@@ -311,6 +311,7 @@ ActiveTimeWindows::ActiveTimeWindows(uint64_t window_ns)
     : window_ns_(std::max<uint64_t>(window_ns, 1)) {}
 
 void ActiveTimeWindows::Add(uint64_t start_ns, uint64_t end_ns) {
+  if (start_ns == 0 || end_ns < start_ns) return;
   if (kernel_count_ == 0) {
     first_start_ns_ = start_ns;
     last_end_ns_ = end_ns;

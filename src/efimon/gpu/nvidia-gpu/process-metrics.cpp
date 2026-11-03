@@ -125,8 +125,8 @@ static std::atomic<bool> activity_record_error_reported{false};
 // out of order, and those of a device other than measured_device_id.
 static std::atomic<size_t> invalid_activity_records{0};
 static std::atomic<size_t> other_device_activity_records{0};
-// CUDA device ordinal measured by NVML, as in CUPTI's deviceId; -1 keeps the
-// records of every device.
+// CUDA device ordinal selected for NVML, as in CUPTI's deviceId; -1 keeps the
+// records of every device, also when the selected device does not exist.
 static int64_t measured_device_id = -1;
 // Set under activity_mutex once the CSVs start to be written. Buffers that
 // CUPTI returns later are only counted, so the export reads the containers
@@ -1442,9 +1442,9 @@ static void ProfilerStart() {
   int device_index = 0;
 
   if (GetConfiguredDeviceIndex(&device_index)) {
-    if (!options.all_devices) measured_device_id = device_index;
     std::string pci_bus_id;
     if (GetCudaPciBusId(device_index, &pci_bus_id)) {
+      if (!options.all_devices) measured_device_id = device_index;
       nvmlReturn_t res = nvmlInit_v2();
 
       if (NVML_SUCCESS == res) {

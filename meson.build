@@ -2,7 +2,13 @@ project(
   'nvidia-process-metrics',
   'cpp',
   version : '0.1.0',
-  default_options : ['cpp_std=c++17', 'warning_level=3'],
+  # The collector runs inside the profiled process, so build it optimized by
+  # default; debugoptimized keeps the debug symbols.
+  default_options : [
+    'cpp_std=c++17',
+    'warning_level=3',
+    'buildtype=debugoptimized',
+  ],
 )
 
 install_prefix = get_option('prefix')

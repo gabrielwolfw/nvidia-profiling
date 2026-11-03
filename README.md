@@ -275,6 +275,13 @@ The first PM sample can start at a stale timestamp and last days; the sampler
 drops it when it lasts over 1000 times the second sample and logs
 `Discarded sample 0`. Pass `--keepFirstSample` to keep it.
 
+Meson builds default to `debugoptimized` (`-O2 -g`); earlier build
+directories were configured as unoptimized `debug` builds. A build directory
+keeps the option values it was configured with, so after updating the
+sources reconfigure it from scratch with `meson setup --wipe <build-dir> ...`
+(or remove it) to pick up new defaults such as the build type,
+`pm_hardware_buffer_mb` and `pm_max_samples`.
+
 For later source changes, run only `meson compile -C build-daemon` and
 `sudo "$(command -v meson)" install -C build-daemon`. Restart the service if
 the daemon executable changed. The manual binaries from step 2 are separate

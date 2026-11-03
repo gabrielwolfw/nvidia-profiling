@@ -75,7 +75,8 @@ class KernelJournal {
   bool Flush();
 
   // Calls visit for every record of the runs that AppendRun() wrote, in
-  // KernelRecordLess order, using memory proportional to the number of runs.
+  // KernelRecordLess order. The read buffers of all runs take 4 MiB, or 16
+  // records per run beyond 7,281 runs.
   // This includes the runs written before a write error. Returns false if
   // the journal cannot be read.
   bool ForEachSorted(const std::function<void(const KernelRecord&)>& visit);

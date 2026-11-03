@@ -34,8 +34,12 @@ namespace {
 constexpr char kMagic[8] = {'N', 'V', 'P', 'M', 'K', 'J', '0', '1'};
 constexpr unsigned char kNameTag = 'N';
 constexpr unsigned char kRunTag = 'R';
-// Records read at once from each run while merging.
-constexpr size_t kMergeRecordsPerRead = 512;
+// Read buffers of all runs while merging, so that memory does not grow with
+// the number of runs: each run reads kMergeBufferBytes / runs at once, within
+// these bounds.
+constexpr size_t kMergeBufferBytes = 4 << 20;
+constexpr size_t kMinMergeRecordsPerRead = 16;
+constexpr size_t kMaxMergeRecordsPerRead = 512;
 
 template <typename T>
 void AppendValue(std::vector<unsigned char>* bytes, T value) {
@@ -85,8 +89,12 @@ KernelRecord DecodeRecord(const unsigned char* bytes) {
 // Reads one run of a journal through a small buffer.
 class RunReader {
  public:
-  RunReader(int descriptor, uint64_t offset, uint64_t count)
-      : descriptor_(descriptor), offset_(offset), remaining_(count) {}
+  RunReader(int descriptor, uint64_t offset, uint64_t count,
+            size_t records_per_read)
+      : descriptor_(descriptor),
+        offset_(offset),
+        remaining_(count),
+        records_per_read_(records_per_read) {}
 
   // Moves to the next record. Returns false at the end of the run or after a
   // read error, which error() reports.
@@ -105,8 +113,7 @@ class RunReader {
 
  private:
   bool Refill() {
-    const uint64_t records =
-        std::min<uint64_t>(remaining_, kMergeRecordsPerRead);
+    const uint64_t records = std::min<uint64_t>(remaining_, records_per_read_);
     const size_t bytes = records * KernelJournal::kRecordBytes;
     buffer_.resize(bytes);
     size_t done = 0;
@@ -130,6 +137,7 @@ class RunReader {
   int descriptor_;
   uint64_t offset_;
   uint64_t remaining_;
+  size_t records_per_read_;
   std::vector<unsigned char> buffer_;
   size_t buffered_ = 0;
   size_t position_ = 0;
@@ -220,10 +228,13 @@ bool KernelJournal::ForEachSorted(
   const int descriptor = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
   if (descriptor < 0) return false;
 
+  const size_t records_per_read = std::clamp<size_t>(
+      kMergeBufferBytes / kRecordBytes / std::max<size_t>(runs_.size(), 1),
+      kMinMergeRecordsPerRead, kMaxMergeRecordsPerRead);
   std::vector<RunReader> readers;
   readers.reserve(runs_.size());
   for (const Run& run : runs_) {
-    readers.emplace_back(descriptor, run.offset, run.count);
+    readers.emplace_back(descriptor, run.offset, run.count, records_per_read);
   }
 
   // Ordered as KernelRecordLess, then by run for identical keys.

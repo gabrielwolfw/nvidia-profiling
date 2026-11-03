@@ -236,6 +236,34 @@ void TestKeepsRunsWrittenBeforeAWriteError() {
   NVPM_VERIFY(journal.Remove());
 }
 
+void TestMergesManySmallRuns() {
+  // More runs than the merge buffer holds at the largest read size.
+  constexpr size_t kRuns = 9'000;
+  std::mt19937_64 random(5);
+  const std::vector<KernelRecord> kernels = RandomKernels(&random, kRuns * 3);
+  const std::filesystem::path path = TemporaryPath("kernel-journal-many");
+  KernelJournal journal;
+  NVPM_VERIFY(journal.Open(path, 1));
+  std::vector<KernelRecord> run;
+  for (size_t next = 0; next < kernels.size(); next += 3) {
+    run.assign(kernels.begin() + next, kernels.begin() + next + 3);
+    NVPM_VERIFY(journal.AppendRun(&run));
+  }
+  std::vector<KernelRecord> expected = kernels;
+  std::sort(expected.begin(), expected.end(), KernelRecordLess);
+  std::vector<KernelRecord> merged;
+  NVPM_VERIFY(journal.ForEachSorted(
+      [&merged](const KernelRecord& record) { merged.push_back(record); }));
+  NVPM_VERIFY(merged.size() == expected.size());
+  NVPM_VERIFY(
+      std::equal(merged.begin(), merged.end(), expected.begin(),
+                 [](const KernelRecord& left, const KernelRecord& right) {
+                   return left.start_ns == right.start_ns &&
+                          left.correlation_id == right.correlation_id;
+                 }));
+  NVPM_VERIFY(journal.Remove());
+}
+
 void TestCsvRowMatchesStreamFormatting() {
   std::mt19937_64 random(11);
   std::vector<KernelRecord> records = RandomKernels(&random, 2'000);
@@ -318,6 +346,7 @@ int main() {
   nvidia_process_metrics::TestMergesRunsInStartOrder();
   nvidia_process_metrics::TestWritesDocumentedLayout();
   nvidia_process_metrics::TestKeepsRunsWrittenBeforeAWriteError();
+  nvidia_process_metrics::TestMergesManySmallRuns();
   nvidia_process_metrics::TestCsvRowMatchesStreamFormatting();
   nvidia_process_metrics::TestEmptyJournalVisitsNothing();
   nvidia_process_metrics::TestWindowsMatchOriginalComputation();

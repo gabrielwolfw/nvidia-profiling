@@ -79,7 +79,7 @@ struct ProfilerOptions {
   // Parse CUPTI buffers in a dedicated thread instead of the CUPTI callback.
   bool activity_worker = true;
   // Preallocated CUPTI activity buffers; 0 allocates one per request.
-  size_t activity_pool_buffers = 8;
+  size_t activity_pool_buffers = 20;
   // CUPTI periodic flush in milliseconds; 0 keeps the CUPTI heuristics.
   uint32_t activity_flush_ms = 1000;
   // Append kernels to the binary kernel_activity.journal instead of keeping
@@ -183,7 +183,9 @@ static std::chrono::milliseconds metrics_window_duration(
 
 constexpr size_t BUFFER_SIZE = 1024 * 1024;
 constexpr size_t ACTIVITY_BUFFER_ALIGNMENT = 8;
-constexpr size_t DEFAULT_ACTIVITY_POOL_BUFFERS = 8;
+// CUPTI holds several buffers at once; on a V100 at 45,000 to 90,000 kernels
+// per second it used up to 18.
+constexpr size_t DEFAULT_ACTIVITY_POOL_BUFFERS = 20;
 constexpr size_t MAX_ACTIVITY_POOL_BUFFERS = 256;
 constexpr size_t MIN_QUEUED_ACTIVITY_BUFFERS = 2;
 constexpr uint32_t DEFAULT_ACTIVITY_FLUSH_MS = 1000;

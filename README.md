@@ -172,7 +172,9 @@ to `children/<pid>/` inside the output directory.
 At exit the profiler also writes `capture_summary.txt`, one `key=value` per
 line: the kernel, memory copy, telemetry and power sample counts,
 `dropped_activity_records` (0 for a complete capture), the records left out
-(`invalid_activity_records`, `other_device_activity_records`),
+(`invalid_activity_records`, `other_device_activity_records`), the records
+that CUPTI returned after the CSVs started to be written
+(`late_activity_records`, not written),
 `activity_buffers_beyond_pool`, the journal state, `profiler_failed`, and the
 CPU time of the profiler's own threads (`telemetry_thread_cpu_ms`,
 `activity_thread_cpu_ms`) and of writing the CSVs at exit

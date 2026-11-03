@@ -128,6 +128,11 @@ static std::atomic<size_t> other_device_activity_records{0};
 // CUDA device ordinal measured by NVML, as in CUPTI's deviceId; -1 keeps the
 // records of every device.
 static int64_t measured_device_id = -1;
+// Set under activity_mutex once the CSVs start to be written. Buffers that
+// CUPTI returns later are only counted, so the export reads the containers
+// without the lock.
+static bool activity_closed = false;
+static std::atomic<size_t> late_activity_records{0};
 
 static uint64_t bytes_h2d = 0;
 static uint64_t bytes_d2h = 0;
@@ -1151,6 +1156,15 @@ static void ParseActivityBuffer(uint8_t* buffer, size_t valid_size) {
 
   CUpti_Activity* record = nullptr;
   CUptiResult result = CUPTI_SUCCESS;
+  if (activity_closed) {
+    size_t late = 0;
+    while (cuptiActivityGetNextRecord(buffer, valid_size, &record) ==
+           CUPTI_SUCCESS) {
+      ++late;
+    }
+    late_activity_records.fetch_add(late, std::memory_order_relaxed);
+    return;
+  }
   while (CUPTI_SUCCESS ==
          (result = cuptiActivityGetNextRecord(buffer, valid_size, &record))) {
     /* Kernel */
@@ -1512,6 +1526,8 @@ static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
           << "other_device_activity_records="
           << other_device_activity_records.load(std::memory_order_relaxed)
           << '\n'
+          << "late_activity_records="
+          << late_activity_records.load(std::memory_order_relaxed) << '\n'
           << "activity_buffers_beyond_pool="
           << activity_pool_misses.load(std::memory_order_relaxed) << '\n'
           << "telemetry_rows=" << telemetry_rows << '\n'
@@ -1531,6 +1547,15 @@ static void ProfilerStop() {
   if (!profiler_active || getpid() != profiler_owner_pid) return;
 
   if (activity_registered) {
+    // Stop new records before the final flush.
+    for (const CUpti_ActivityKind kind :
+         {CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL, CUPTI_ACTIVITY_KIND_MEMCPY}) {
+      const CUptiResult disable_result = cuptiActivityDisable(kind);
+      if (disable_result != CUPTI_SUCCESS) {
+        PrintCuptiError("Failed to disable activity collection",
+                        disable_result);
+      }
+    }
     const CUptiResult flush_result =
         cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
@@ -1541,6 +1566,10 @@ static void ProfilerStop() {
   }
 
   StopActivityWorker();
+  {
+    std::lock_guard<std::mutex> lock(activity_mutex);
+    activity_closed = true;
+  }
   ReleaseActivityBufferPool();
 
   // Keep real power samples beyond the last kernel for a full final window.

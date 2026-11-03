@@ -188,6 +188,8 @@ static std::thread* activity_worker_thread = nullptr;
 
 constexpr char PROFILER_COMPLETION_SUCCESS = '0';
 constexpr char PROFILER_COMPLETION_FAILURE = '1';
+// The CSVs were written but lack data; see CaptureIsPartial().
+constexpr char PROFILER_COMPLETION_PARTIAL = '2';
 
 constexpr auto METRICS_SAMPLE_INTERVAL = std::chrono::milliseconds(50);
 constexpr auto TELEMETRY_FLUSH_INTERVAL = std::chrono::seconds(1);
@@ -240,12 +242,30 @@ static void InitializeCompletionChannel() {
   profiler_completion_fd = descriptor;
 }
 
+// Returns whether the capture misses data although every file was written:
+// no NVML telemetry, or kernels and memory copies that CUPTI dropped, did not
+// complete or returned after the CSVs started.
+static bool CaptureIsPartial() {
+  return !nvml_initialized ||
+         dropped_activity_records.load(std::memory_order_relaxed) > 0 ||
+         invalid_activity_records.load(std::memory_order_relaxed) > 0 ||
+         late_activity_records.load(std::memory_order_relaxed) > 0;
+}
+
+static const char* CaptureStatus() {
+  if (profiler_failed.load(std::memory_order_acquire)) return "failed";
+  return CaptureIsPartial() ? "partial" : "complete";
+}
+
 static void ReportCompletion() {
   if (profiler_completion_fd < 0 || getpid() != profiler_owner_pid) return;
 
-  const char status = profiler_failed.load(std::memory_order_acquire)
-                          ? PROFILER_COMPLETION_FAILURE
-                          : PROFILER_COMPLETION_SUCCESS;
+  char status = PROFILER_COMPLETION_SUCCESS;
+  if (profiler_failed.load(std::memory_order_acquire)) {
+    status = PROFILER_COMPLETION_FAILURE;
+  } else if (CaptureIsPartial()) {
+    status = PROFILER_COMPLETION_PARTIAL;
+  }
   ssize_t written = -1;
   do {
     written = write(profiler_completion_fd, &status, sizeof(status));
@@ -1539,7 +1559,8 @@ static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
           << "exit_write_cpu_ms=" << exit_write_cpu_ms << '\n'
           << "exit_write_wall_ms=" << exit_write_wall_ms << '\n'
           << "profiler_failed="
-          << (profiler_failed.load(std::memory_order_acquire) ? 1 : 0) << '\n';
+          << (profiler_failed.load(std::memory_order_acquire) ? 1 : 0) << '\n'
+          << "capture_status=" << CaptureStatus() << '\n';
   if (!FinishCsvFile(&summary, path)) profiler_failed = true;
 }
 

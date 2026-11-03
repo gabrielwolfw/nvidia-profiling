@@ -175,11 +175,16 @@ line: the kernel, memory copy, telemetry and power sample counts,
 (`invalid_activity_records`, `other_device_activity_records`), the records
 that CUPTI returned after the CSVs started to be written
 (`late_activity_records`, not written),
-`activity_buffers_beyond_pool`, the journal state, `profiler_failed`, and the
+`activity_buffers_beyond_pool`, the journal state, `profiler_failed`,
+`capture_status`, and the
 CPU time of the profiler's own threads (`telemetry_thread_cpu_ms`,
 `activity_thread_cpu_ms`) and of writing the CSVs at exit
 (`exit_write_cpu_ms`, `exit_write_wall_ms`). These threads are named
 `nvpm-telemetry` and `nvpm-activity`; CUPTI's own threads are not included.
+`capture_status` is `failed` when a file could not be written, `partial` when
+the files are complete but data is missing (no NVML telemetry, or dropped,
+incomplete or late activity records), and `complete` otherwise. The launcher
+fails the session only for `failed` and prints a warning for `partial`.
 
 A profiling session is identified by its output directory. A process that
 sets a different `NVIDIA_METRICS_OUTPUT_DIR` starts its own session even when

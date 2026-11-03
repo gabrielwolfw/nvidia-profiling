@@ -30,10 +30,13 @@ namespace {
 volatile sig_atomic_t requested_signal = 0;
 constexpr char kProfilerCompletionSuccess = '0';
 constexpr char kProfilerCompletionFailure = '1';
+constexpr char kProfilerCompletionPartial = '2';
 
 struct ProfilerCompletion {
   bool success;
   std::string reason;
+  // The files were written, but capture_summary.txt reports missing data.
+  bool partial = false;
 };
 
 void RequestShutdown(int signal_number) {
@@ -196,6 +199,9 @@ ProfilerCompletion ReadProfilerCompletion(int completion_fd) {
   if (received == sizeof(status)) {
     if (status == kProfilerCompletionSuccess) {
       return {true, {}};
+    }
+    if (status == kProfilerCompletionPartial) {
+      return {true, {}, true};
     }
     if (status == kProfilerCompletionFailure) {
       return {false, "preload_output_failed"};
@@ -415,6 +421,9 @@ int main(int argc, char** argv) {
 
     const ProfilerCompletion profiler_completion =
         ReadProfilerCompletion(completion_pipe[0]);
+    if (profiler_completion.partial) {
+      std::cerr << "Profiler capture is partial; see capture_summary.txt\n";
+    }
     if (!profiler_completion.success) {
       std::cerr << "Profiler failed: " << profiler_completion.reason << '\n';
       if (requested_signal == 0) {

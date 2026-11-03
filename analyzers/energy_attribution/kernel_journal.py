@@ -139,7 +139,8 @@ def read_kernel_journal(path: pathlib.Path) -> KernelJournal:
 def write_kernel_csv(journal: KernelJournal, output_path: pathlib.Path) -> int:
     """Writes the journal as a kernel_activity.csv sorted by start time.
 
-    Rows with the same start keep their journal order, and kernel names are
+    Rows with the same start are ordered by correlation id, as the collector
+    orders them, and kernel names are
     quoted as the collector quotes them.
 
     Args:
@@ -149,7 +150,9 @@ def write_kernel_csv(journal: KernelJournal, output_path: pathlib.Path) -> int:
     Returns:
         The number of kernel rows written.
     """
-    order = np.argsort(journal.records["start_ns"], kind="stable")
+    order = np.lexsort(
+        (journal.records["correlation_id"], journal.records["start_ns"])
+    )
     records = journal.records[order]
     with output_path.open("w", newline="", encoding="utf-8") as output:
         # The collector leaves the header unquoted and quotes every name.

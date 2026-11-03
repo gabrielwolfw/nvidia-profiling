@@ -506,15 +506,6 @@ static bool PrepareOutputFiles() {
   return true;
 }
 
-static void WriteKernelRow(std::ofstream* file, uint64_t event_id,
-                           const KernelEvent& kernel) {
-  *file << event_id << ',' << profiler_owner_pid << ',' << kernel.device_id
-        << ',' << kernel.context_id << ',' << kernel.stream_id << ','
-        << kernel.correlation_id << ',' << kernel.start_ns << ','
-        << kernel.end_ns << ',' << (kernel.end_ns - kernel.start_ns) << ','
-        << escaped_kernel_names[kernel.name_id] << '\n';
-}
-
 static const char* MemcpyKindName(uint8_t copy_kind) {
   switch (copy_kind) {
     case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
@@ -548,15 +539,24 @@ static const char* MemcpyKindName(uint8_t copy_kind) {
 static bool WriteSortedKernels(
     std::ofstream* file, nvidia_process_metrics::ActiveTimeWindows* windows,
     uint64_t* kernel_count) {
-  std::stable_sort(kernels.begin(), kernels.end(),
-                   [](const KernelEvent& left, const KernelEvent& right) {
-                     return left.start_ns < right.start_ns;
-                   });
+  std::sort(kernels.begin(), kernels.end(),
+            nvidia_process_metrics::KernelRecordLess);
 
+  // Rows are formatted with std::to_chars into one buffer and written in
+  // large blocks; the text is the same as with stream formatting.
+  constexpr size_t kCsvBlockBytes = 1 << 20;
+  std::string rows;
+  rows.reserve(kCsvBlockBytes + 512);
   uint64_t event_id = 0;
   auto write = [&](const KernelEvent& kernel) {
-    WriteKernelRow(file, event_id++, kernel);
+    nvidia_process_metrics::AppendKernelCsvRow(
+        event_id++, profiler_owner_pid, kernel,
+        escaped_kernel_names[kernel.name_id], &rows);
     windows->Add(kernel.start_ns, kernel.end_ns);
+    if (rows.size() >= kCsvBlockBytes) {
+      file->write(rows.data(), static_cast<std::streamsize>(rows.size()));
+      rows.clear();
+    }
   };
 
   size_t memory_index = 0;
@@ -564,13 +564,15 @@ static bool WriteSortedKernels(
   if (kernel_journal.record_count() > 0) {
     journal_read = kernel_journal.ForEachSorted([&](const KernelEvent& kernel) {
       while (memory_index < kernels.size() &&
-             kernels[memory_index].start_ns < kernel.start_ns) {
+             nvidia_process_metrics::KernelRecordLess(kernels[memory_index],
+                                                      kernel)) {
         write(kernels[memory_index++]);
       }
       write(kernel);
     });
   }
   while (memory_index < kernels.size()) write(kernels[memory_index++]);
+  file->write(rows.data(), static_cast<std::streamsize>(rows.size()));
 
   windows->Finish();
   *kernel_count = event_id;

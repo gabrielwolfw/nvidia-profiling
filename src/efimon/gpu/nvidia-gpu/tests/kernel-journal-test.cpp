@@ -18,7 +18,9 @@
 #include <filesystem>  // NOLINT
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -134,22 +136,15 @@ void TestMergesRunsInStartOrder() {
       [&merged](const KernelRecord& kernel) { merged.push_back(kernel); }));
 
   std::vector<KernelRecord> expected = kernels;
-  std::stable_sort(expected.begin(), expected.end(),
-                   [](const KernelRecord& left, const KernelRecord& right) {
-                     return left.start_ns < right.start_ns;
-                   });
+  std::sort(expected.begin(), expected.end(), KernelRecordLess);
   NVPM_VERIFY(merged.size() == expected.size());
   bool sorted = true;
   for (size_t index = 1; index < merged.size(); ++index) {
     sorted = sorted && merged[index - 1].start_ns <= merged[index].start_ns;
   }
   NVPM_VERIFY(sorted);
-  // Same multiset of records: compare after a total order.
-  auto total_order = [](const KernelRecord& left, const KernelRecord& right) {
-    return left.correlation_id < right.correlation_id;
-  };
-  std::sort(merged.begin(), merged.end(), total_order);
-  std::sort(expected.begin(), expected.end(), total_order);
+  // Correlation ids are unique here, so the merged order is fully determined,
+  // ties in start time included.
   bool same = merged.size() == expected.size();
   for (size_t index = 0; same && index < merged.size(); ++index) {
     same = SameRecord(merged[index], expected[index]);
@@ -241,6 +236,33 @@ void TestKeepsRunsWrittenBeforeAWriteError() {
   NVPM_VERIFY(journal.Remove());
 }
 
+void TestCsvRowMatchesStreamFormatting() {
+  std::mt19937_64 random(11);
+  std::vector<KernelRecord> records = RandomKernels(&random, 2'000);
+  KernelRecord extreme;
+  extreme.start_ns = std::numeric_limits<uint64_t>::max();
+  extreme.end_ns = 0;  // Unsigned duration wraps, as before.
+  extreme.device_id = std::numeric_limits<uint32_t>::max();
+  records.push_back(extreme);
+  records.push_back(KernelRecord{});
+
+  const std::string quoted = "\"gemm \"\"tile\"\"\"";
+  std::string fast;
+  std::ostringstream reference;
+  for (size_t index = 0; index < records.size(); ++index) {
+    const KernelRecord& record = records[index];
+    const int pid = static_cast<int>(index % 3 == 0 ? 1 : 4194304);
+    AppendKernelCsvRow(index, pid, record, quoted, &fast);
+    // The stream-based row writer this replaces.
+    reference << index << ',' << pid << ',' << record.device_id << ','
+              << record.context_id << ',' << record.stream_id << ','
+              << record.correlation_id << ',' << record.start_ns << ','
+              << record.end_ns << ',' << (record.end_ns - record.start_ns)
+              << ',' << quoted << '\n';
+  }
+  NVPM_VERIFY(fast == reference.str());
+}
+
 void TestEmptyJournalVisitsNothing() {
   const std::filesystem::path path = TemporaryPath("kernel-journal-empty");
   KernelJournal journal;
@@ -285,6 +307,7 @@ int main() {
   nvidia_process_metrics::TestMergesRunsInStartOrder();
   nvidia_process_metrics::TestWritesDocumentedLayout();
   nvidia_process_metrics::TestKeepsRunsWrittenBeforeAWriteError();
+  nvidia_process_metrics::TestCsvRowMatchesStreamFormatting();
   nvidia_process_metrics::TestEmptyJournalVisitsNothing();
   nvidia_process_metrics::TestWindowsMatchOriginalComputation();
   nvidia_process_metrics::TestWindowsWithoutKernels();

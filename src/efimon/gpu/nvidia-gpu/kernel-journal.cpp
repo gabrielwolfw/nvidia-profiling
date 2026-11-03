@@ -12,12 +12,14 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <queue>
 #include <string>
 #include <system_error>  // NOLINT
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -49,15 +51,23 @@ T ReadValue(const unsigned char* bytes) {
   return value;
 }
 
-void EncodeRecord(const KernelRecord& record,
-                  std::vector<unsigned char>* bytes) {
-  AppendValue(bytes, record.start_ns);
-  AppendValue(bytes, record.end_ns);
-  AppendValue(bytes, record.device_id);
-  AppendValue(bytes, record.context_id);
-  AppendValue(bytes, record.stream_id);
-  AppendValue(bytes, record.correlation_id);
-  AppendValue(bytes, record.name_id);
+// Writes the kRecordBytes encoding of record at bytes.
+void EncodeRecord(const KernelRecord& record, unsigned char* bytes) {
+  std::memcpy(bytes, &record.start_ns, 8);
+  std::memcpy(bytes + 8, &record.end_ns, 8);
+  std::memcpy(bytes + 16, &record.device_id, 4);
+  std::memcpy(bytes + 20, &record.context_id, 4);
+  std::memcpy(bytes + 24, &record.stream_id, 4);
+  std::memcpy(bytes + 28, &record.correlation_id, 4);
+  std::memcpy(bytes + 32, &record.name_id, 4);
+}
+
+template <typename T>
+void AppendDecimal(T value, std::string* out) {
+  char digits[24];
+  const std::to_chars_result result =
+      std::to_chars(digits, digits + sizeof(digits), value);
+  out->append(digits, result.ptr);
 }
 
 KernelRecord DecodeRecord(const unsigned char* bytes) {
@@ -129,6 +139,11 @@ class RunReader {
 
 }  // namespace
 
+bool KernelRecordLess(const KernelRecord& left, const KernelRecord& right) {
+  if (left.start_ns != right.start_ns) return left.start_ns < right.start_ns;
+  return left.correlation_id < right.correlation_id;
+}
+
 KernelJournal::~KernelJournal() { Close(); }
 
 bool KernelJournal::Open(const std::filesystem::path& path, int32_t pid) {
@@ -164,16 +179,21 @@ bool KernelJournal::AppendName(uint32_t name_id, std::string_view name) {
 bool KernelJournal::AppendRun(std::vector<KernelRecord>* records) {
   if (records->empty()) return !failed_;
 
-  std::stable_sort(records->begin(), records->end(),
-                   [](const KernelRecord& left, const KernelRecord& right) {
-                     return left.start_ns < right.start_ns;
-                   });
+  // CUPTI buffers are usually in order already.
+  if (!std::is_sorted(records->begin(), records->end(), KernelRecordLess)) {
+    std::sort(records->begin(), records->end(), KernelRecordLess);
+  }
 
-  encoded_.clear();
-  encoded_.reserve(1 + sizeof(uint32_t) + records->size() * kRecordBytes);
-  encoded_.push_back(kRunTag);
-  AppendValue(&encoded_, static_cast<uint32_t>(records->size()));
-  for (const KernelRecord& record : *records) EncodeRecord(record, &encoded_);
+  constexpr size_t kRunHeaderBytes = 1 + sizeof(uint32_t);
+  const auto count = static_cast<uint32_t>(records->size());
+  encoded_.resize(kRunHeaderBytes + records->size() * kRecordBytes);
+  encoded_[0] = kRunTag;
+  std::memcpy(encoded_.data() + 1, &count, sizeof(count));
+  unsigned char* next = encoded_.data() + kRunHeaderBytes;
+  for (const KernelRecord& record : *records) {
+    EncodeRecord(record, next);
+    next += kRecordBytes;
+  }
 
   // A run counts only once it reached the file, so that a later write error
   // never hides the runs written before it. On failure *records is kept for
@@ -206,26 +226,28 @@ bool KernelJournal::ForEachSorted(
     readers.emplace_back(descriptor, run.offset, run.count);
   }
 
-  // Ordered by start, then by run so that equal starts keep append order.
-  using HeapEntry = std::pair<uint64_t, size_t>;
+  // Ordered as KernelRecordLess, then by run for identical keys.
+  using HeapEntry = std::tuple<uint64_t, uint32_t, size_t>;
   std::priority_queue<HeapEntry, std::vector<HeapEntry>,
                       std::greater<HeapEntry>>
       heap;
   bool read_failed = false;
   for (size_t index = 0; index < readers.size(); ++index) {
     if (readers[index].Next()) {
-      heap.push({readers[index].current().start_ns, index});
+      heap.push({readers[index].current().start_ns,
+                 readers[index].current().correlation_id, index});
     } else if (readers[index].error()) {
       read_failed = true;
     }
   }
 
   while (!heap.empty() && !read_failed) {
-    const size_t index = heap.top().second;
+    const size_t index = std::get<2>(heap.top());
     heap.pop();
     visit(readers[index].current());
     if (readers[index].Next()) {
-      heap.push({readers[index].current().start_ns, index});
+      heap.push({readers[index].current().start_ns,
+                 readers[index].current().correlation_id, index});
     } else if (readers[index].error()) {
       read_failed = true;
     }
@@ -257,6 +279,32 @@ void KernelJournal::Close() {
   if (file_ == nullptr) return;
   if (std::fclose(file_) != 0) failed_ = true;
   file_ = nullptr;
+}
+
+void AppendKernelCsvRow(uint64_t event_id, int64_t pid,
+                        const KernelRecord& record,
+                        std::string_view quoted_name, std::string* out) {
+  AppendDecimal(event_id, out);
+  out->push_back(',');
+  AppendDecimal(pid, out);
+  out->push_back(',');
+  AppendDecimal(record.device_id, out);
+  out->push_back(',');
+  AppendDecimal(record.context_id, out);
+  out->push_back(',');
+  AppendDecimal(record.stream_id, out);
+  out->push_back(',');
+  AppendDecimal(record.correlation_id, out);
+  out->push_back(',');
+  AppendDecimal(record.start_ns, out);
+  out->push_back(',');
+  AppendDecimal(record.end_ns, out);
+  out->push_back(',');
+  // Unsigned subtraction, as the stream-based writer did.
+  AppendDecimal(record.end_ns - record.start_ns, out);
+  out->push_back(',');
+  out->append(quoted_name);
+  out->push_back('\n');
 }
 
 ActiveTimeWindows::ActiveTimeWindows(uint64_t window_ns)

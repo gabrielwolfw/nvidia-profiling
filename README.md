@@ -132,7 +132,10 @@ nanoseconds (`timestamp_ns`) and `power_mw`. Each driver update appears once,
 whereas `gpu_telemetry.csv` repeats the last value until the driver updates
 it. Samples taken before the profiler started are skipped.
 
-Kernels are not kept in memory: every completed CUPTI buffer is sorted and
+Kernel rows are ordered by `start_ns`, and kernels that start at the same
+nanosecond by `correlation_id` (launch order), so the same capture always
+produces the same file. Kernels are not kept in memory: every completed CUPTI
+buffer is sorted and
 appended to the binary `kernel_activity.journal`. At a normal exit the
 profiler merges the journal into the sorted `kernel_activity.csv` and removes
 the journal. If the journal cannot be written, for example on a full disk,

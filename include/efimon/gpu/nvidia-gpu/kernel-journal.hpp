@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <filesystem>  // NOLINT
 #include <functional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -29,6 +30,11 @@ struct KernelRecord {
   uint32_t name_id = 0;
 };
 
+// Orders kernel records by start time, then by CUPTI correlation id, which
+// follows launch order. Records with the same start therefore always come
+// out in the same order, whatever the order in which CUPTI delivered them.
+bool KernelRecordLess(const KernelRecord& left, const KernelRecord& right);
+
 // Appends kernel names and runs of kernel records to a binary file while the
 // profiled process runs, then merges the runs back in start order.
 //
@@ -36,7 +42,8 @@ struct KernelRecord {
 // version and the int32 PID; then chunks tagged 'N' (uint32 id, uint32 length,
 // name bytes) or 'R' (uint32 count, then count records of kRecordBytes with
 // start, end, device, context, stream, correlation and name id). Every run is
-// sorted by start. analyzers/recover_kernel_journal.py reads the same layout.
+// sorted with KernelRecordLess. analyzers/recover_kernel_journal.py reads the
+// same layout.
 //
 // Not thread-safe: callers serialize every call.
 class KernelJournal {
@@ -57,7 +64,8 @@ class KernelJournal {
   // Records the name of a kernel id. Returns false after a write error.
   bool AppendName(uint32_t name_id, std::string_view name);
 
-  // Sorts *records by start, appends them as one run and flushes the file.
+  // Sorts *records with KernelRecordLess, appends them as one run and flushes
+  // the file.
   // On success *records is cleared and keeps its capacity for reuse. Returns
   // false after a write error, leaving *records unchanged apart from its
   // order; every later call also fails.
@@ -66,11 +74,10 @@ class KernelJournal {
   // Flushes buffered chunks to the file. Returns false after a write error.
   bool Flush();
 
-  // Calls visit for every record of the runs that AppendRun() wrote, in start
-  // order, using memory proportional to the number of runs. This includes the
-  // runs written before a write error. Records with the same start keep the
-  // order in which they were appended. Returns false if the journal cannot
-  // be read.
+  // Calls visit for every record of the runs that AppendRun() wrote, in
+  // KernelRecordLess order, using memory proportional to the number of runs.
+  // This includes the runs written before a write error. Returns false if
+  // the journal cannot be read.
   bool ForEachSorted(const std::function<void(const KernelRecord&)>& visit);
 
   // Closes and deletes the journal file. Returns false if it cannot be
@@ -99,6 +106,14 @@ class KernelJournal {
   uint64_t record_count_ = 0;
   bool failed_ = false;
 };
+
+// Appends one kernel_activity.csv row to *out: event id, PID, device,
+// context, stream and correlation ids, start, end, duration and the kernel
+// name, which must already be quoted for CSV. The text matches what
+// std::ostream writes for the same values.
+void AppendKernelCsvRow(uint64_t event_id, int64_t pid,
+                        const KernelRecord& record,
+                        std::string_view quoted_name, std::string* out);
 
 // Accumulates the union of kernel intervals into fixed windows that start at
 // the first kernel, without storing the kernels. Records must arrive in start

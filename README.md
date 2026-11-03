@@ -179,7 +179,8 @@ that CUPTI returned after the CSVs started to be written
 `capture_status`, and the
 CPU time of the profiler's own threads (`telemetry_thread_cpu_ms`,
 `activity_thread_cpu_ms`) and of writing the CSVs at exit
-(`exit_write_cpu_ms`, `exit_write_wall_ms`). These threads are named
+(`exit_write_cpu_ms`, `exit_write_wall_ms`), and the final telemetry wait
+(`tail_wait_ms`). These threads are named
 `nvpm-telemetry` and `nvpm-activity`; CUPTI's own threads are not included.
 `capture_status` is `failed` when a file could not be written, `partial` when
 the files are complete but data is missing (no NVML telemetry, or dropped,
@@ -208,6 +209,7 @@ Each collector behavior can be switched for A/B comparisons:
 | `NVIDIA_METRICS_FIXED_PERIOD` | `1` | `0` sleeps 50 ms after each telemetry read, which drifts |
 | `NVIDIA_METRICS_SLOW_READ_MS` | `200` | Period of the energy, temperature, utilization and driver power sample reads; `0` reads them for every row |
 | `NVIDIA_METRICS_ALL_DEVICES` | `0` | `1` keeps the kernels and memory copies of every device |
+| `NVIDIA_METRICS_TAIL_MS` | window | Telemetry kept at exit after the last kernel, so that its window has real power samples; it adds this time to the program. `0` skips it |
 
 Setting every variable in the table to `0`, and `NVIDIA_METRICS_ALL_DEVICES`
 to `1`, reproduces the earlier collection behavior, except that child processes stay idle instead of overwriting the

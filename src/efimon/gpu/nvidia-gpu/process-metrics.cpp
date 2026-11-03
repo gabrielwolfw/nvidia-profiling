@@ -208,6 +208,12 @@ constexpr size_t MIN_QUEUED_ACTIVITY_BUFFERS = 2;
 constexpr uint32_t DEFAULT_ACTIVITY_FLUSH_MS = 1000;
 constexpr uint32_t DEFAULT_SLOW_READ_MS = 200;
 constexpr uint32_t MAX_SLOW_READ_MS = 10000;
+constexpr uint64_t MAX_TAIL_MS = 60000;
+// Telemetry kept after the last kernel at exit, so that the last kernel window
+// has real power samples. NVIDIA_METRICS_TAIL_MS sets it; one kernel window by
+// default.
+static std::chrono::milliseconds tail_duration(0);
+static double tail_wait_ms = 0.0;
 
 constexpr char KERNEL_CSV_HEADER[] =
     "event_id,pid,device_id,context_id,stream_id,correlation_id,"
@@ -1410,8 +1416,13 @@ static void ProfilerStart() {
   std::printf("PID: %d\n", getpid());
 
   GetConfiguredWindowDuration(&metrics_window_duration);
-  std::printf("Kernel window: %" PRId64 " ms\n",
-              static_cast<int64_t>(metrics_window_duration.count()));
+  tail_duration = std::chrono::milliseconds(GetEnvInteger(
+      "NVIDIA_METRICS_TAIL_MS",
+      static_cast<uint64_t>(metrics_window_duration.count()), MAX_TAIL_MS));
+  std::printf("Kernel window: %" PRId64 " ms; final telemetry: %" PRId64
+              " ms\n",
+              static_cast<int64_t>(metrics_window_duration.count()),
+              static_cast<int64_t>(tail_duration.count()));
   std::printf(
       "Options: follow_children=%d activity_worker=%d pool_buffers=%zu "
       "flush_ms=%" PRIu32
@@ -1558,6 +1569,7 @@ static void WriteCaptureSummary(uint64_t kernel_count, double exit_write_cpu_ms,
           << "activity_thread_cpu_ms=" << activity_thread_cpu_ms << '\n'
           << "exit_write_cpu_ms=" << exit_write_cpu_ms << '\n'
           << "exit_write_wall_ms=" << exit_write_wall_ms << '\n'
+          << "tail_wait_ms=" << tail_wait_ms << '\n'
           << "profiler_failed="
           << (profiler_failed.load(std::memory_order_acquire) ? 1 : 0) << '\n'
           << "capture_status=" << CaptureStatus() << '\n';
@@ -1594,8 +1606,13 @@ static void ProfilerStop() {
   ReleaseActivityBufferPool();
 
   // Keep real power samples beyond the last kernel for a full final window.
-  if (metrics_thread != nullptr)
-    std::this_thread::sleep_for(metrics_window_duration);
+  if (metrics_thread != nullptr && tail_duration.count() > 0) {
+    const auto tail_start = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(tail_duration);
+    tail_wait_ms = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - tail_start)
+                       .count();
+  }
 
   StopGpuMetricsSampling();
 

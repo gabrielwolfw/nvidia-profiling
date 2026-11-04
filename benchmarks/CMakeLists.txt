@@ -38,6 +38,7 @@ add_cuda_benchmark(bench_transfer transfer/bench_transfer.cu)
 add_cuda_benchmark(bench_power_cycle power/bench_power_cycle.cu)
 add_cuda_benchmark(bench_molecular_dynamics
   simulation/bench_molecular_dynamics.cu)
+add_cuda_benchmark(bench_quantized_dnn neural/bench_quantized_dnn.cu)
 
 add_executable(bench_idle baseline/bench_idle.cpp)
 target_link_libraries(bench_idle PRIVATE benchmark_common benchmark_cuda_common)

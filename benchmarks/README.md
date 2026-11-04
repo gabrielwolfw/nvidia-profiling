@@ -20,6 +20,7 @@ are excluded from the reported experimental time.
 | `bench_transfer` | Transfer | PCIe/DMA path | `size`, `direction` |
 | `bench_power_cycle` | Phased power sweep | Compute / memory / mixed | `duty-cycle`, `period-ms` |
 | `bench_molecular_dynamics` | Scientific application | FP32/FP64 pipelines, irregular memory | `precision`, `lattice-cells` |
+| `bench_quantized_dnn` | Neural-network inference | FP32 FMA / FP16 HFMA2 / INT8 DP4A | `precision`, layer widths |
 
 `bench_compute` runs independent FP32 FMA dependency chains in registers and writes
 one result per thread. `bench_memory` repeatedly performs a full streaming copy.
@@ -124,6 +125,7 @@ benchmarks/
 ├── memory/
 │   ├── bench_memory.cu
 │   └── bench_stride.cu
+├── neural/bench_quantized_dnn.cu
 ├── simulation/bench_molecular_dynamics.cu
 └── transfer/bench_transfer.cu
 ```
@@ -351,3 +353,45 @@ nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
 FP64 throughput depends strongly on the GPU: data-center parts such as the
 V100 run FP64 at half the FP32 rate, while consumer and Jetson GPUs run it at
 1/32 or 1/64.
+
+## Quantized deep neural network (QDNN) inference
+
+`neural/bench_quantized_dnn.cu` runs batched inference of a deep multilayer
+perceptron, by default 1024 -> 4096 -> 4096 -> 4096 -> 1024 with ReLU between
+layers and a batch of 256 (41.9 M multiply-accumulates per sample). Weights
+and inputs are random and deterministic (`--seed`), so no model file is
+needed. `--precision` selects one of three versions of the same network:
+
+| Precision | Weights and activations | Inner product |
+|---|---|---|
+| `fp32` | float | `fmaf`, one MAC per 32-bit word |
+| `fp16` | half | `__hfma2`, two MACs per word; partial sums promoted to float every 16 products |
+| `int8` | symmetric INT8, per-output-channel weight scales, per-layer activation scales | `__dp4a`, four MACs per word, INT32 accumulation; float dequantization and INT8 requantization in the epilogue |
+
+All three use the same tiled GEMM kernel (`qdnn_linear_kernel`, a 64 x 64
+output tile per 256-thread block) and move the same number of 32-bit words per
+tile, so they differ only in arithmetic density and memory footprint. Tensor
+cores are not used: the V100 has none for INT8, while `__hfma2` and `__dp4a`
+exist on every GPU from compute capability 6.1, so the same source builds for
+the V100 (`70`) and Jetson Thor (`101` with CUDA 12.8, `110` with CUDA 13).
+
+The INT8 activation scales are calibrated on the fp32 activations of the
+input batch (max |x| / 127 per layer). Each run reports the accuracy cost
+against the fp32 network as `REL_L2_ERROR_VS_FP32` (logits) and
+`TOP1_AGREEMENT_VS_FP32_PCT` (same arg-max class). Throughput is reported as
+`SAMPLES_PER_SECOND`, `MS_PER_BATCH` and `TERA_MACS_PER_SECOND`. Like
+`bench_power_cycle`, phase markers delimit warm-up, measurement and cooldown;
+model construction and calibration happen before the first marker.
+
+`--mode verify` runs one 64 x 128 x 512 layer of each precision and compares
+it with a host reference built from the same rounded or quantized inputs
+(INT8 sums are exact on the host). It reports `VERIFY=OK` when the relative
+L2 error is at most 1e-5 (fp32, int8) or 5e-3 (fp16).
+
+```bash
+./build/bench_quantized_dnn --mode verify
+nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
+  --command -- ./build/bench_quantized_dnn --precision int8 \
+  --warmup-seconds 10 --duration 40 --cooldown-seconds 10
+```
+

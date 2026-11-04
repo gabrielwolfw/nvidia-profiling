@@ -21,6 +21,7 @@ are excluded from the reported experimental time.
 | `bench_power_cycle` | Phased power sweep | Compute / memory / mixed | `duty-cycle`, `period-ms` |
 | `bench_molecular_dynamics` | Scientific application | FP32/FP64 pipelines, irregular memory | `precision`, `lattice-cells` |
 | `bench_quantized_dnn` | Neural-network inference | FP32 FMA / FP16 HFMA2 / INT8 DP4A | `precision`, layer widths |
+| `bench_vpi` | Computer vision (NVIDIA VPI) | Image filters, corner detection, stereo matching | `algorithm`, `backend` |
 
 `bench_compute` runs independent FP32 FMA dependency chains in registers and writes
 one result per thread. `bench_memory` repeatedly performs a full streaming copy.
@@ -127,7 +128,8 @@ benchmarks/
 │   └── bench_stride.cu
 ├── neural/bench_quantized_dnn.cu
 ├── simulation/bench_molecular_dynamics.cu
-└── transfer/bench_transfer.cu
+├── transfer/bench_transfer.cu
+└── vision/bench_vpi.cu
 ```
 
 Additional compute, memory, and mixed workloads can reuse the common parsing,
@@ -395,3 +397,58 @@ nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
   --warmup-seconds 10 --duration 40 --cooldown-seconds 10
 ```
 
+## Computer vision with NVIDIA VPI
+
+`vision/bench_vpi.cu` streams synthetic frames through NVIDIA's Vision
+Programming Interface (VPI 4, the version in JetPack 7). `--algorithm` selects
+the workload:
+
+| Algorithm | Frames | Work per frame |
+|---|---|---|
+| `gaussian` | U8 3840 x 2160 | 7 x 7 Gaussian filter (stencil, memory bound) |
+| `rescale` | U8 3840 x 2160 -> 1920 x 1080 | bilinear downscale by two |
+| `harris` | U8 1920 x 1080 | Harris corner detector with non-maximum suppression |
+| `stereo` | U8 1920 x 1080 pair | semi-global matching disparity, 64 disparities (compute bound) |
+| `pipeline` | BGR8 3840 x 2160 | grey conversion, 5 x 5 Gaussian, downscale by two, Harris corners |
+
+`--width` and `--height` override the frame size. `--backend` selects the VPI
+backend: `cuda` (default) runs on any GPU VPI supports, from the V100 (`sm_70`)
+to Jetson Thor; `cpu` runs on the host; `pva`, `vic` and `ofa` exist only on
+Jetson. Those three are accelerators outside the GPU, so CUPTI records none of
+their work and NVML GPU power does not include it.
+
+The frames are deterministic (`--seed`): bright squares on a textured
+background, whose corners are known, and a random-texture stereo pair whose
+right view is the left view shifted by 20 pixels. Throughput is reported as
+`FRAMES_PER_SECOND`, `MS_PER_FRAME` and `MEGAPIXELS_PER_SECOND` (input
+pixels), together with `KEYPOINTS_LAST_FRAME` (Harris, pipeline) or
+`DISPARITY_WITHIN_1PX_PCT` (stereo). The Harris strength threshold defaults
+to 10 for `harris` and 5 for `pipeline` (`--harris-strength`), the values at
+which each scene's square corners are detected: VPI's default of 20 finds a
+third fewer on the `harris` scene and none after the pipeline's blur and
+downscale. Phase markers delimit warm-up,
+measurement and cooldown as in `bench_power_cycle`; VPI's kernels appear in
+the capture under VPI's own names.
+
+`--mode verify` runs each algorithm on the CUDA backend. The Gaussian filter,
+the downscale and the grey conversion are compared with the CPU backend: at
+most two grey levels apart and at most 1e-4 of the pixels more than one level
+apart, because the two backends round the filter taps differently. Harris
+corners must match the squares' corners within 3 pixels (precision and recall
+at least 90 %), and at least 90 % of the stereo disparities must be within one
+pixel of the true 20.
+
+VPI is not part of the CUDA Toolkit. On Jetson it is installed with JetPack
+under `/opt/nvidia/vpi4`. On x86_64 NVIDIA publishes Ubuntu packages
+(`libnvvpi4`, `vpi4-dev`) in `https://repo.download.nvidia.com/jetson/x86_64`;
+they need glibc 2.35 (Ubuntu 22.04 or newer). The target is only configured
+when CMake finds VPI:
+
+```bash
+cmake -S . -B build -Dvpi_DIR=/opt/nvidia/vpi4/lib/x86_64-linux-gnu/cmake/vpi
+cmake --build build -j --target bench_vpi
+./build/bench_vpi --mode verify
+nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
+  --command -- ./build/bench_vpi --algorithm pipeline \
+  --warmup-seconds 10 --duration 40 --cooldown-seconds 10
+```

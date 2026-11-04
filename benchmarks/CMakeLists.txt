@@ -40,6 +40,16 @@ add_cuda_benchmark(bench_molecular_dynamics
   simulation/bench_molecular_dynamics.cu)
 add_cuda_benchmark(bench_quantized_dnn neural/bench_quantized_dnn.cu)
 
+# NVIDIA VPI ships with JetPack and as Ubuntu packages for x86_64; pass
+# -Dvpi_DIR=<prefix>/lib/<arch>/cmake/vpi when it is not installed system-wide.
+find_package(vpi 4 QUIET)
+if(vpi_FOUND)
+  add_cuda_benchmark(bench_vpi vision/bench_vpi.cu)
+  target_link_libraries(bench_vpi PRIVATE vpi)
+else()
+  message(STATUS "VPI 4 not found: bench_vpi is not built")
+endif()
+
 add_executable(bench_idle baseline/bench_idle.cpp)
 target_link_libraries(bench_idle PRIVATE benchmark_common benchmark_cuda_common)
 target_compile_options(bench_idle PRIVATE -Wall -Wextra -Wpedantic)

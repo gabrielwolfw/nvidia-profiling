@@ -19,6 +19,7 @@ are excluded from the reported experimental time.
 | `bench_stride` | Memory access | L1/L2/DRAM | `stride` |
 | `bench_transfer` | Transfer | PCIe/DMA path | `size`, `direction` |
 | `bench_power_cycle` | Phased power sweep | Compute / memory / mixed | `duty-cycle`, `period-ms` |
+| `bench_molecular_dynamics` | Scientific application | FP32/FP64 pipelines, irregular memory | `precision`, `lattice-cells` |
 
 `bench_compute` runs independent FP32 FMA dependency chains in registers and writes
 one result per thread. `bench_memory` repeatedly performs a full streaming copy.
@@ -123,6 +124,7 @@ benchmarks/
 ├── memory/
 │   ├── bench_memory.cu
 │   └── bench_stride.cu
+├── simulation/bench_molecular_dynamics.cu
 └── transfer/bench_transfer.cu
 ```
 
@@ -197,3 +199,63 @@ The production mode uses five block-randomized repetitions. The default configur
 contains 15-second warm-up and cooldown phases, a 45-second stable phase, 200 ms NVML
 windows, and a 100 ms duty-control period. Run the pilot first: requested duty cycle
 is a control variable, not a claim of a particular wattage on every GPU.
+
+## Molecular dynamics (Lennard-Jones liquid)
+
+`simulation/bench_molecular_dynamics.cu` simulates a Lennard-Jones liquid in
+reduced units with the settings of the LAMMPS `in.lj` benchmark: an FCC
+lattice at density 0.8442 melted from T = 1.44, cutoff 2.5 sigma, neighbor
+skin 0.3 sigma, neighbor list rebuilt every 20 steps without a displacement
+check, and NVE velocity Verlet with dt = 0.005 tau. The default
+`--lattice-cells 32` gives 4 x 32^3 = 131072 atoms.
+
+Each step launches these kernels, so a capture mixes compute-bound and
+memory-bound work:
+
+| Kernel | Work |
+|---|---|
+| `md_integrate_first_half_kernel` | half-kick and drift, periodic wrap |
+| `md_bin_atoms_kernel` | cell list (every `--neighbor-every` steps) |
+| `md_build_neighbor_list_kernel` | full neighbor list from 27 cells (same steps) |
+| `md_lj_force_kernel` | pair forces, about 78 neighbors per atom |
+| `md_integrate_second_half_kernel` | second half-kick |
+
+`--precision fp32|fp64` selects the type of positions, velocities and forces
+(the kernels are templates, so the kernel name shows the type). Energies are
+always reduced in double, so `RELATIVE_ENERGY_DRIFT` (total energy change over
+the measurement phase) compares how well each precision conserves energy.
+
+Like `bench_power_cycle`, it emits `benchmark_*_marker` kernels between
+warm-up, measurement and cooldown. The two energy reductions run outside the
+measured interval. Throughput is reported as `STEPS_PER_SECOND`,
+`MS_PER_STEP` and `ATOM_STEPS_PER_SECOND`; energy per atom-step is the NVML
+energy of the measurement phase divided by `MEASUREMENT_STEPS x ATOMS`.
+
+Cell and neighbor capacities are fixed (96 atoms per cell, 192 neighbors per
+atom). An overflow stops the run with `STATUS=ERROR` instead of dropping pairs.
+
+### Verify
+
+`--mode verify` runs `--verify-steps` steps (rounded up to a rebuild step, so
+the list is fresh) and compares every GPU force with an exact O(N^2) host
+computation in double. It needs at most 32000 atoms:
+
+```bash
+./build/bench_molecular_dynamics --mode verify --precision fp32 --lattice-cells 12
+./build/bench_molecular_dynamics --mode verify --precision fp64 --lattice-cells 12
+```
+
+`VERIFY=OK` requires a relative force error of at most 1e-4 (fp32) or 1e-9
+(fp64), relative to the largest force.
+
+### Capture
+
+```bash
+nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
+  --command -- ./build/bench_molecular_dynamics --precision fp64 \
+  --warmup-seconds 10 --duration 40 --cooldown-seconds 10
+```
+
+FP64 throughput depends strongly on the GPU: data-center parts such as the
+V100 run FP64 at half the FP32 rate, while consumer and Jetson GPUs run it at
+1/32 or 1/64.

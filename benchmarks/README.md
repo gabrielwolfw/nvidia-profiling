@@ -200,6 +200,98 @@ contains 15-second warm-up and cooldown phases, a 45-second stable phase, 200 ms
 windows, and a 100 ms duty-control period. Run the pilot first: requested duty cycle
 is a control variable, not a claim of a particular wattage on every GPU.
 
+## Vision Transformer (ViT) inference
+
+`pytorch/vit_inference.py` runs `timm`'s `vit_base_patch16_224` (12 blocks,
+dimension 768, about 86 M parameters, 197 tokens per 224x224 image) with
+random weights and inputs, so a capture needs no download. Each process runs
+one precision, so every launcher session maps to one configuration:
+
+| `--dtype` | Path |
+|---|---|
+| `fp32` | Baseline; TF32 stays off unless `--tf32` is given |
+| `fp16`, `bf16` | Native PyTorch half precision |
+| `fp8` | `bf16` model with torchao dynamic float8 on every Linear layer whose dimensions are multiples of 16 (the 1000-class head stays `bf16`); needs compute capability 8.9 or newer |
+
+Like `bench_power_cycle`, it emits `benchmark_*_marker` kernels between
+warm-up, measurement and cooldown, so the measured phase is found in
+`kernel_activity.csv`. Model construction and `torch.compile` run before the
+first marker. The log reports `IMAGES_PER_SECOND`, `MS_PER_BATCH` and
+`REL_L2_ERROR_VS_FP32` (logit error against the same model in fp32).
+
+Two choices keep it measurable with the launcher:
+
+- It removes the profiler library from `LD_PRELOAD` for its child processes.
+  `torch.compile` starts compiler subprocesses; with the preload each would
+  start its own profiler and overwrite the session CSV files when it exits.
+- `torch.compile` modes that use CUDA graphs are not offered, because CUDA
+  graph replay crashed inside CUPTI on Thor (see the llama.cpp notes in the
+  top-level README).
+
+### Set up on Thor
+
+Use a virtual environment, and install `torch`, `torchvision` and `torchao`
+from the same CUDA 13 index *before* `timm`. Otherwise pip pulls a
+`torchvision` that does not match `torch` (`operator torchvision::nms does
+not exist`).
+
+```bash
+cd ~/klobo
+python3 -m venv .venv-vit
+.venv-vit/bin/pip install torch torchvision torchao \
+  --index-url https://download.pytorch.org/whl/cu130
+.venv-vit/bin/pip install timm
+```
+
+Check the installation outside the launcher. It prints the device, compute
+capability and the CUDA architectures in the wheel, compiles the marker
+kernels and runs every precision for two seconds:
+
+```bash
+.venv-vit/bin/python benchmarks/pytorch/vit_inference.py --preflight
+.venv-vit/bin/python benchmarks/pytorch/vit_inference.py --preflight --compile
+```
+
+Every line must read `PREFLIGHT <dtype>: OK` and `PHASE_MARKERS=ok`. A
+warning that the wheel has no binary for the GPU architecture means the wheel
+does not target Thor; install one that does before capturing. If only `fp8`
+fails, capture the other precisions and record why.
+
+### Capture
+
+One session per precision and repetition. The order alternates between
+repetitions, and the launcher duration is a cap (the session ends when the
+benchmark exits):
+
+```bash
+benchmarks/scripts/run_vit_sweep.sh \
+  --python "$PWD/.venv-vit/bin/python" \
+  --output-dir results/vit-sweep/thor \
+  --repetitions 3 --batch-size 64 --duration 40 --compile
+```
+
+A single manual run:
+
+```bash
+nvidia-process-metrics-launcher --device 0 --duration 300 --window-ms 200 \
+  --command -- "$PWD/.venv-vit/bin/python" \
+  "$PWD/benchmarks/pytorch/vit_inference.py" --dtype fp16 --batch-size 64 \
+  --duration 40 --compile
+```
+
+### Analyze
+
+```bash
+python3 benchmarks/scripts/analyze_vit_sweep.py --study-dir results/vit-sweep/thor
+```
+
+It writes `summary/vit_sessions.csv` (one row per session) and
+`summary/vit_precision_summary.csv` (mean and standard deviation per
+precision) with throughput, mean NVML power, energy per image, dynamic
+energy per image (cooldown power as the idle baseline) and images per joule.
+Each session directory is also a normal capture, so the kernel-energy
+analyzers in `analyzers/` accept it as an unseen workload.
+
 ## Molecular dynamics (Lennard-Jones liquid)
 
 `simulation/bench_molecular_dynamics.cu` simulates a Lennard-Jones liquid in

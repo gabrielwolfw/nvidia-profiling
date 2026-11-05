@@ -12,6 +12,7 @@ After an intended behaviour change, regenerate the golden files with:
 
 from argparse import Namespace
 import csv
+import gzip
 import json
 import math
 import os
@@ -42,6 +43,8 @@ from energy_attribution.cli import (  # pylint: disable=wrong-import-position
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ANALYZERS_ROOT = REPO_ROOT / "analyzers"
 GOLDEN_ROOT = Path(__file__).resolve().parent / "golden"
+# Scenarios checked against another scenario's golden outputs.
+GOLDEN_ALIASES = {"multisession_gz": "multisession"}
 UPDATE_GOLDEN = os.environ.get("UPDATE_GOLDEN") == "1"
 RELATIVE_TOLERANCE = 1e-9
 ABSOLUTE_TOLERANCE = 1e-9
@@ -130,6 +133,13 @@ def scenarios(fixture):
             "--max-families",
             "5",
         ],
+        "multisession_gz": [
+            "analyze_bayesian_kernel_energy_multisession.py",
+            "--sessions-root",
+            str(fixture / "train-gz"),
+            "--max-families",
+            "5",
+        ],
         "transfer": [
             "analyze_bayesian_kernel_energy_transfer.py",
             "--train-sessions-root",
@@ -151,6 +161,17 @@ def scenarios(fixture):
             "--plot",
         ],
     }
+
+
+def gzip_kernel_copy(source, destination):
+    """Copy session directories, gzip-compressing each kernel CSV."""
+    shutil.copytree(source, destination)
+    for kernels in destination.glob("*/kernel_activity.csv"):
+        with kernels.open("rb") as plain, gzip.open(
+            kernels.with_name(kernels.name + ".gz"), "wb"
+        ) as packed:
+            shutil.copyfileobj(plain, packed)
+        kernels.unlink()
 
 
 def as_number(value):
@@ -216,6 +237,7 @@ class WorkflowRegressionTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         root = Path(cls.temporary.name)
         fixture = write_fixture(root / "fixture")
+        gzip_kernel_copy(fixture / "train", fixture / "train-gz")
         cls.fixture = fixture
         cls.root = root
         cls.outputs = {}
@@ -235,7 +257,7 @@ class WorkflowRegressionTests(unittest.TestCase):
                 text=True,
             )
             cls.outputs[name] = output
-            if UPDATE_GOLDEN:
+            if UPDATE_GOLDEN and name not in GOLDEN_ALIASES:
                 golden = GOLDEN_ROOT / name
                 shutil.rmtree(golden, ignore_errors=True)
                 golden.mkdir(parents=True)
@@ -248,7 +270,7 @@ class WorkflowRegressionTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def assert_matches_golden(self, name):
-        golden = GOLDEN_ROOT / name
+        golden = GOLDEN_ROOT / GOLDEN_ALIASES.get(name, name)
         output = self.outputs[name]
         expected_files = sorted(
             path.name
@@ -307,6 +329,9 @@ class WorkflowRegressionTests(unittest.TestCase):
 
     def test_multisession(self):
         self.assert_matches_golden("multisession")
+
+    def test_multisession_reads_gzip_kernel_csv(self):
+        self.assert_matches_golden("multisession_gz")
 
     def test_transfer(self):
         self.assert_matches_golden("transfer")

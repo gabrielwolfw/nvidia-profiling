@@ -1,6 +1,7 @@
 """Columnar loaders for CUPTI kernel traces and NVML power telemetry."""
 
 import csv
+import gzip
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -21,8 +22,15 @@ def require_fields(fieldnames, required, label):
         raise ValueError(f"{label} CSV is missing columns: {sorted(missing)}")
 
 
+def open_text(path):
+    """Open a CSV for reading, transparently decompressing ``*.gz`` files."""
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", newline="", encoding="utf-8")
+    return path.open(newline="", encoding="utf-8")
+
+
 def read_csv_header(path):
-    with path.open(newline="", encoding="utf-8") as source:
+    with open_text(path) as source:
         return next(csv.reader(source), [])
 
 
@@ -142,7 +150,7 @@ def _parse_int_column(values):
 
 
 def load_kernels(path, load_event_ids=False, chunk_rows=KERNEL_CHUNK_ROWS):
-    """Read a CUPTI kernel CSV once into compact numpy columns."""
+    """Read a CUPTI kernel CSV (optionally ``.gz``) into numpy columns."""
     header = read_csv_header(path)
     require_fields(header, KERNEL_COLUMNS, "kernels")
     columns = list(KERNEL_COLUMNS)

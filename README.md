@@ -563,6 +563,79 @@ values. `test_power_metrics` and `test_session_energy_metrics` report the
 coverage of both. Session predictive totals assume independent window noise,
 so a systematic per-session bias can still fall outside them.
 
+### Pool many sessions into one kernel-energy model
+
+`analyzers/analyze_bayesian_kernel_energy_multisession.py` fits one kernel-family
+model across every session below `--sessions-root`. Each subdirectory that holds
+`gpu_telemetry.csv` and `kernel_activity.csv` (or a gzip-compressed
+`kernel_activity.csv.gz`) is one session; symlinks to session directories work,
+so one root can combine several campaigns. The final 20% of every session is
+the temporal holdout. Sessions are loaded one at a time, so peak memory is one
+session's trace: 54 V100 sessions fit on a laptop with about 1 GB of RAM.
+
+```bash
+python3 analyzers/analyze_bayesian_kernel_energy_multisession.py \
+  --sessions-root results/v100-daemon/training-sessions \
+  --output-dir results/v100-daemon/training-sessions-model \
+  --window-ms 300 \
+  --max-families 64 \
+  --temperature-feature \
+  --plot
+```
+
+`--max-families` is the number of kernel columns, including `__other__`;
+kernels are ranked by their total duration over all training sessions. Use
+sessions from a single GPU model: every kernel has one coefficient, so mixing
+platforms averages their power.
+
+`--temperature-feature` adds the window's NVML temperature above
+`--temperature-reference-c` (default 25 C) as one more non-negative term, in
+W per degree. It captures the leakage power that rises while the GPU warms up
+and is reported as the `__temperature__` family ("GPU temperature" in plots).
+The telemetry must contain `temperature_c`. Without the flag, results are
+identical to earlier versions.
+
+### Predict an unseen workload
+
+`analyzers/analyze_bayesian_kernel_energy_transfer.py` trains on a session root
+and predicts one external session that is not in it. The prediction uses only
+the external session's kernel trace (and its temperature with
+`--temperature-feature`); its measured power is used only for evaluation.
+
+```bash
+python3 analyzers/analyze_bayesian_kernel_energy_transfer.py \
+  --train-sessions-root results/v100-daemon/training-sessions \
+  --external-test-session results/v100-daemon/<new-session> \
+  --output-dir results/v100-daemon/<new-session>/transfer \
+  --window-ms 300 \
+  --max-families 64 \
+  --temperature-feature \
+  --source-label "V100 training" \
+  --target-label "New workload" \
+  --plot
+```
+
+The command reports two predictions on the same evaluation windows:
+
+- **Zero-shot** applies the trained model unchanged. Use it when training and
+  test sessions come from the same GPU model; it is the real prediction.
+- **Calibrated** fits a non-negative offset and scale on the first
+  `--calibration-fraction` (default 20%) of the external session's measured
+  power, then predicts the rest. It is meant for a different GPU (for example
+  V100 training, Thor test). On the same GPU it adds no information and can be
+  slightly worse than zero-shot, because the short warm-up prefix does not
+  represent the rest of the session.
+
+Read the zero-shot results in `bayesian_transfer_summary.json`
+(`zero_shot_evaluation_power_metrics`, `zero_shot_predictive_interval_coverage`)
+and in `bayesian_transfer_power_fit.png` and `bayesian_transfer_energy_scatter.png`.
+`v100_explicit_family_duration_coverage` is the share of the external session's
+kernel time that falls in families learned during training; when it is low,
+most kernels use the `__other__` coefficient and the prediction is less
+reliable. Predictions are also less reliable when the new workload uses known
+kernels in a different regime, for example much shorter launches than any
+training session.
+
 ### Package layout
 
 All analyses live in `analyzers/energy_attribution`. Analyzer scripts live

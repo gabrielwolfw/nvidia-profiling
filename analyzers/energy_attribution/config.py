@@ -85,7 +85,20 @@ class SingleSessionConfig(ModelConfig):
 
 
 @dataclass(frozen=True, kw_only=True)
-class MultiSessionConfig(ModelConfig):
+class PooledModelConfig(ModelConfig):
+    """Model settings of the workflows that pool several sessions."""
+
+    temperature_feature: bool = False
+    temperature_reference_c: float = 25.0
+
+    def validate(self, *, minimum_families: int = 2) -> None:
+        super().validate(minimum_families=minimum_families)
+        if not -50.0 <= self.temperature_reference_c <= 150.0:
+            raise ValueError("temperature_reference_c must be in [-50, 150]")
+
+
+@dataclass(frozen=True, kw_only=True)
+class MultiSessionConfig(PooledModelConfig):
     """Inputs and output policy for a pooled multi-session model."""
 
     sessions_root: Path
@@ -99,7 +112,7 @@ class MultiSessionConfig(ModelConfig):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CrossGpuConfig(ModelConfig):
+class CrossGpuConfig(PooledModelConfig):
     """Inputs and output policy for cross-GPU transfer and calibration.
 
     ``max_families`` defaults lower than the other workflows so that unseen

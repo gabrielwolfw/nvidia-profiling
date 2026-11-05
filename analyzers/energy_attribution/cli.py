@@ -48,6 +48,14 @@ HELP = {
     "source_label": "Name of the training GPU in console output and plots.",
     "target_label": "Name of the external GPU in console output and plots.",
     "plot": "Generate diagnostic PNG plots (requires matplotlib).",
+    "temperature_feature": (
+        "Add the window GPU temperature above --temperature-reference-c as "
+        "a non-negative design column (W per degree C), so temperature-"
+        "dependent leakage power is not attributed to kernels."
+    ),
+    "temperature_reference_c": (
+        "Temperature (C) at which the temperature column is zero."
+    ),
     "min_telemetry_samples": (
         "Windows with fewer telemetry samples are dropped."
     ),

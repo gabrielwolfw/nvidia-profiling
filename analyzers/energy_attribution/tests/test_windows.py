@@ -17,6 +17,10 @@ from energy_attribution.diagnostics import (  # pylint: disable=wrong-import-pos
 from energy_attribution.io import (  # pylint: disable=wrong-import-position
     PowerTrace,
     load_kernels,
+    load_power_trace,
+)
+from energy_attribution.sessions import (  # pylint: disable=wrong-import-position
+    add_temperature_column,
 )
 
 
@@ -215,6 +219,50 @@ class IdentifiabilityTests(unittest.TestCase):
         report = check_identifiability(design, 30, ["b0", "a", "b", "c", "d"])
         self.assertEqual(report["aliased_terms"], ["a", "b"])
         self.assertEqual(report["test_families_unseen_in_training"], ["d"])
+
+
+class TemperatureColumnTests(unittest.TestCase):
+    """The optional temperature design column."""
+
+    def test_column_holds_degrees_above_reference_times_duration(self):
+        trace = PowerTrace(
+            np.array([0, 100, 200, 300], dtype=np.int64),
+            np.full(4, 50_000.0),
+            np.array([20.0, 30.0, np.nan, 50.0]),
+        )
+        rows = [
+            {"start_ns": 0, "end_ns": 100, "duration_ns": 100},
+            {"start_ns": 100, "end_ns": 200, "duration_ns": 100},
+            {"start_ns": 200, "end_ns": 250, "duration_ns": 50},
+        ]
+        activity = np.zeros((3, 2))
+        add_temperature_column(trace, rows, activity, 1, 25.0)
+        # Midpoints 50/150/225 ns; the NaN sample is skipped.
+        expected = np.array([25.0, 35.0, 42.5])
+        np.testing.assert_allclose([row["temperature_c"] for row in rows], expected)
+        np.testing.assert_allclose(
+            activity[:, 1], np.maximum(0.0, expected - 25.0) * [100, 100, 50]
+        )
+        np.testing.assert_array_equal(activity[:, 0], 0.0)
+
+    def test_missing_temperature_is_rejected(self):
+        trace = PowerTrace(np.array([0, 100]), np.array([1.0, 2.0]))
+        rows = [{"start_ns": 0, "end_ns": 100, "duration_ns": 100}]
+        with self.assertRaisesRegex(ValueError, "temperature_c"):
+            add_temperature_column(trace, rows, np.zeros((1, 1)), 0, 25.0)
+
+    def test_telemetry_loader_reads_temperature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gpu_telemetry.csv"
+            path.write_text(
+                "timestamp_ns,power_mw,temperature_c\n"
+                "200,30,\n100,10,41\n100,20,42\n"
+            )
+            trace = load_power_trace(path)
+        np.testing.assert_array_equal(trace.timestamps_ns, [100, 200])
+        np.testing.assert_array_equal(trace.power_mw, [20.0, 30.0])
+        np.testing.assert_array_equal(trace.temperature_c[:1], [42.0])
+        self.assertTrue(np.isnan(trace.temperature_c[1]))
 
 
 if __name__ == "__main__":

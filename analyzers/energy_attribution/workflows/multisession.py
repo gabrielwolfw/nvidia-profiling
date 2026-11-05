@@ -12,6 +12,7 @@ from energy_attribution.allocation import (
 )
 from energy_attribution.config import MultiSessionConfig
 from energy_attribution.dataset import WindowDataset, assign_splits
+from energy_attribution.families import TEMPERATURE_FAMILY
 from energy_attribution.prediction import PosteriorPredictions
 from energy_attribution.regression import PosteriorSamples, coefficient_summary_rows
 from energy_attribution.sessions import (
@@ -82,7 +83,9 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
     scan = scan_sessions(
         discover_session_paths(config.sessions_root), config.max_families
     )
-    families = scan.families
+    families = list(scan.families)
+    if config.temperature_feature:
+        families.append(TEMPERATURE_FAMILY)
     family_index = {family: index for index, family in enumerate(families)}
     sessions = []
     for session in scan.sessions:
@@ -92,6 +95,7 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
             family_index,
             config.window_ns,
             config.idle_power_mw,
+            config.temperature_reference_c,
         )
         windows.train_count = assign_splits(
             windows.rows,
@@ -121,12 +125,17 @@ def analyze(config: MultiSessionConfig) -> MultiSessionResult:
         "included_sessions": [session.name for session in sessions],
         "excluded_sessions": scan.excluded_sessions,
         "window_ms": config.window_ms,
+        **(
+            {"temperature_reference_c": config.temperature_reference_c}
+            if config.temperature_feature
+            else {}
+        ),
         "train_windows": dataset.train_count,
         "test_windows": int(dataset.mask("test").sum()),
         "excluded_short_windows": int(dataset.mask("excluded").sum()),
         "min_window_fraction": config.min_window_fraction,
         "kernel_events": int(sum(scan.event_count_by_name.values())),
-        "kernel_families": len(families),
+        "kernel_families": len(families) - int(config.temperature_feature),
         "design_matrix_rank": identifiability["design_matrix_rank"],
         "design_parameters": len(terms),
         "identifiability": identifiability,

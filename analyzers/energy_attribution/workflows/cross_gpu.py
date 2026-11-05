@@ -20,7 +20,11 @@ from energy_attribution.allocation import (
 from energy_attribution.config import CrossGpuConfig
 from energy_attribution.dataset import activity_design, split_mask, window_durations_ns
 from energy_attribution.diagnostics import check_identifiability
-from energy_attribution.families import OTHER_FAMILY, scan_kernel_families
+from energy_attribution.families import (
+    OTHER_FAMILY,
+    TEMPERATURE_FAMILY,
+    scan_kernel_families,
+)
 from energy_attribution.io import load_kernels
 from energy_attribution.prediction import (
     PosteriorPredictions,
@@ -112,6 +116,7 @@ def training_windows(config, scan, selected, family_index):
             family_index,
             config.window_ns,
             config.idle_power_mw,
+            config.temperature_reference_c,
         )
         for session in scan.sessions
     ]
@@ -136,7 +141,12 @@ def external_session(config, selected, family_index):
         config.external_test_session.name, telemetry, kernels, scan
     )
     windows = build_session_windows(
-        session, selected, family_index, config.window_ns, config.idle_power_mw
+        session,
+        selected,
+        family_index,
+        config.window_ns,
+        config.idle_power_mw,
+        config.temperature_reference_c,
     )
     return scan, windows
 
@@ -261,6 +271,8 @@ def analyze(config: CrossGpuConfig) -> CrossGpuResult:  # pylint: disable=too-ma
         discover_session_paths(config.train_sessions_root), config.max_families
     )
     families, selected = training_family_basis(train_scan)
+    if config.temperature_feature:
+        families.append(TEMPERATURE_FAMILY)
     family_index = {family: index for index, family in enumerate(families)}
     (
         train_rows,
@@ -357,6 +369,11 @@ def analyze(config: CrossGpuConfig) -> CrossGpuResult:  # pylint: disable=too-ma
             f"{target} suffix"
         ),
         "window_ms": config.window_ms,
+        **(
+            {"temperature_reference_c": config.temperature_reference_c}
+            if config.temperature_feature
+            else {}
+        ),
         "calibration_fraction": config.calibration_fraction,
         "training_windows": train_count,
         "v100_calibration_windows": calibration_count,
@@ -366,7 +383,7 @@ def analyze(config: CrossGpuConfig) -> CrossGpuResult:  # pylint: disable=too-ma
             "v100": int((~test_complete).sum()),
         },
         "min_window_fraction": config.min_window_fraction,
-        "kernel_families": len(families),
+        "kernel_families": len(families) - int(config.temperature_feature),
         "training_design_rank": identifiability["design_matrix_rank"],
         "training_design_parameters": int(all_design.shape[1]),
         "identifiability": identifiability,

@@ -3,6 +3,7 @@
 import csv
 import gzip
 import logging
+import math
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +44,15 @@ def write_csv(path, rows, fieldnames):
 
 @dataclass
 class PowerTrace:
-    """Sorted, timestamp-deduplicated NVML power samples."""
+    """Sorted, timestamp-deduplicated NVML power samples.
+
+    ``temperature_c`` is ``None`` when the CSV has no ``temperature_c``
+    column; unparsable temperatures are NaN.
+    """
 
     timestamps_ns: np.ndarray
     power_mw: np.ndarray
+    temperature_c: np.ndarray = None
 
     @property
     def first_ns(self):
@@ -65,22 +71,29 @@ def load_power_trace(path):
         require_fields(
             reader.fieldnames, {"timestamp_ns", "power_mw"}, "Telemetry"
         )
+        has_temperature = "temperature_c" in reader.fieldnames
         for row in reader:
             try:
-                samples.append(
-                    (int(row["timestamp_ns"]), float(row["power_mw"]))
-                )
+                sample = (int(row["timestamp_ns"]), float(row["power_mw"]))
             except (TypeError, ValueError):
                 skipped += 1
+                continue
+            temperature = math.nan
+            if has_temperature:
+                try:
+                    temperature = float(row["temperature_c"])
+                except (TypeError, ValueError):
+                    pass
+            samples.append(sample + (temperature,))
     if skipped:
         logger.warning("Skipped %d invalid telemetry rows.", skipped)
     samples.sort()
     deduplicated = []
-    for timestamp, power in samples:
-        if deduplicated and timestamp == deduplicated[-1][0]:
-            deduplicated[-1] = (timestamp, power)
+    for sample in samples:
+        if deduplicated and sample[0] == deduplicated[-1][0]:
+            deduplicated[-1] = sample
         else:
-            deduplicated.append((timestamp, power))
+            deduplicated.append(sample)
     if len(deduplicated) < 2:
         raise ValueError(
             "At least two distinct telemetry timestamps are required"
@@ -88,6 +101,13 @@ def load_power_trace(path):
     return PowerTrace(
         np.fromiter((sample[0] for sample in deduplicated), dtype=np.int64),
         np.fromiter((sample[1] for sample in deduplicated), dtype=np.float64),
+        (
+            np.fromiter(
+                (sample[2] for sample in deduplicated), dtype=np.float64
+            )
+            if has_temperature
+            else None
+        ),
     )
 
 

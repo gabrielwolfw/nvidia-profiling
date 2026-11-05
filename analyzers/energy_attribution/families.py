@@ -12,6 +12,9 @@ from energy_attribution.io import KernelTable
 logger = logging.getLogger(__name__)
 
 OTHER_FAMILY = "__other__"
+# Optional non-kernel design column: window-mean GPU temperature above a
+# reference, so the model can learn temperature-dependent (leakage) power.
+TEMPERATURE_FAMILY = "__temperature__"
 
 
 @dataclass
@@ -34,6 +37,8 @@ class KernelScan:  # pylint: disable=too-many-instance-attributes
 
 def source_names(family, all_names, selected):
     """Kernel names whose events are counted under ``family``."""
+    if family == TEMPERATURE_FAMILY:
+        return set()
     return (
         set(all_names) - set(selected) if family == OTHER_FAMILY else {family}
     )

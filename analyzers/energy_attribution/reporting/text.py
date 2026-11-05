@@ -7,12 +7,14 @@
 import re
 
 from energy_attribution.diagnostics import log_identifiability_warnings
-from energy_attribution.families import OTHER_FAMILY
+from energy_attribution.families import OTHER_FAMILY, TEMPERATURE_FAMILY
 
 
 def short_kernel_name(name, limit=52):
     if name == OTHER_FAMILY:
         return "Other kernels"
+    if name == TEMPERATURE_FAMILY:
+        return "GPU temperature"
     matrix_vector = re.search(
         r"mul_mat_vec_qIL9ggml_type(\d+)ELi(\d+)ELb([01])ELb([01])ELb([01])",
         name,

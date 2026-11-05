@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from energy_attribution.families import (
+    TEMPERATURE_FAMILY,
     KernelScan,
     family_columns,
     scan_kernel_families,
@@ -137,12 +138,55 @@ def scan_sessions(session_inputs, max_families):
     )
 
 
+def window_temperature_c(trace, rows):
+    """Telemetry temperature interpolated at every window's midpoint."""
+    if trace.temperature_c is None:
+        raise ValueError(
+            "The temperature feature needs a temperature_c telemetry column"
+        )
+    valid = np.isfinite(trace.temperature_c)
+    if not valid.any():
+        raise ValueError("Telemetry has no valid temperature_c samples")
+    midpoints = np.asarray(
+        [(row["start_ns"] + row["end_ns"]) / 2 for row in rows],
+        dtype=np.float64,
+    )
+    return np.interp(
+        midpoints,
+        trace.timestamps_ns[valid].astype(np.float64),
+        trace.temperature_c[valid],
+    )
+
+
+def add_temperature_column(
+    trace, rows, activity_ns, column, temperature_reference_c
+):
+    """Fill ``column`` so its busy fraction is degrees above the reference.
+
+    The design divides each column by the window length, so storing
+    ``excess_c * duration_ns`` yields ``max(0, T - reference)`` in degrees C.
+    """
+    temperature = window_temperature_c(trace, rows)
+    excess = np.maximum(0.0, temperature - temperature_reference_c)
+    durations = np.asarray([row["duration_ns"] for row in rows], dtype=float)
+    activity_ns[:, column] = excess * durations
+    for row, value in zip(rows, temperature.tolist()):
+        row["temperature_c"] = value
+
+
 def build_session_windows(
-    session, selected, family_index, window_ns, idle_power_mw
+    session,
+    selected,
+    family_index,
+    window_ns,
+    idle_power_mw,
+    temperature_reference_c=None,
 ):
     """Aggregate one scanned session; releases its KernelTable afterwards.
 
     The table is reloaded from disk when ``scan_sessions`` already released it.
+    When ``family_index`` holds the temperature column, it is filled with the
+    window temperature above ``temperature_reference_c``.
     """
     name, scan = session.name, session.scan
     logger.info("\n=== Aggregating %s ===", name)
@@ -171,6 +215,14 @@ def build_session_windows(
         window_ns,
         idle_power_mw,
     )
+    if TEMPERATURE_FAMILY in family_index:
+        add_temperature_column(
+            trace,
+            rows,
+            activity_ns,
+            family_index[TEMPERATURE_FAMILY],
+            temperature_reference_c,
+        )
     for index, row in enumerate(rows):
         row["session"] = name
         row["session_window_index"] = index

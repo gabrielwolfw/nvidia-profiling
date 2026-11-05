@@ -33,6 +33,7 @@ from energy_attribution import (  # pylint: disable=wrong-import-position
     CrossGpuConfig,
     MultiSessionConfig,
     SingleSessionConfig,
+    analyze_multisession,
     analyze_single_session,
     run_single_session,
 )
@@ -380,6 +381,45 @@ class WorkflowRegressionTests(unittest.TestCase):
             float(result.events.mean.sum()),
             result.accounting["attributed_posterior_mean_mj"],
             delta=1e-6 * result.accounting["attributed_posterior_mean_mj"],
+        )
+
+    def test_multisession_temperature_feature(self):
+        """The temperature column is fitted as one extra non-kernel term."""
+        settings = {
+            "sessions_root": self.fixture / "train",
+            "output_dir": self.root / "outputs" / "temperature",
+            "max_families": 5,
+            "posterior_draws": 100,
+            "burn_in": 50,
+            "thin": 1,
+        }
+        base = analyze_multisession(MultiSessionConfig(**settings))
+        result = analyze_multisession(
+            MultiSessionConfig(
+                **settings,
+                temperature_feature=True,
+                temperature_reference_c=20.0,
+            )
+        )
+        self.assertEqual(result.families, base.families + ["__temperature__"])
+        self.assertEqual(
+            result.summary["kernel_families"], base.summary["kernel_families"]
+        )
+        self.assertEqual(result.summary["temperature_reference_c"], 20.0)
+        self.assertNotIn("temperature_reference_c", base.summary)
+        self.assertEqual(
+            result.coefficient_rows[-1]["term"], "__temperature__"
+        )
+        self.assertTrue(all("temperature_c" in row for row in result.dataset.rows))
+        temperature_row = next(
+            row
+            for row in result.family_rows
+            if row["kernel_family"] == "__temperature__"
+        )
+        self.assertEqual(temperature_row["event_count"], 0)
+        self.assertLess(
+            abs(result.accounting["conservation_error_mj"]),
+            1e-6 * result.accounting["measured_dynamic_energy_mj"],
         )
 
 

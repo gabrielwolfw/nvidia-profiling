@@ -452,3 +452,35 @@ nvidia-process-metrics-launcher --device 0 --duration 120 --window-ms 200 \
   --command -- ./build/bench_vpi --algorithm pipeline \
   --warmup-seconds 10 --duration 40 --cooldown-seconds 10
 ```
+
+## LLM inference with llama.cpp
+
+`scripts/run_llm_sweep.sh` captures llama.cpp text generation for one or more
+GGUF models. Every session uses the same prompt, 6000 generated tokens
+(`--ignore-eos`), greedy sampling and a fixed seed, so sessions of different
+models and quantizations are comparable. Build llama.cpp with CUDA graphs
+disabled, as described in section 5 of the top-level README, and use its
+`llama-completion` binary.
+
+```bash
+benchmarks/scripts/run_llm_sweep.sh \
+  --llama-bin ~/llama/workloads/llama.cpp/build-no-graphs/bin/llama-completion \
+  --output-dir results/llm-sweep/v100 \
+  --model llama8b=/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf \
+  --model qwen7b=/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+  --repetitions 3
+```
+
+`--model NAME=PATH` can be repeated; `NAME` becomes part of each session
+directory (`<NN>-<NAME>-rep-<R>`). The model order alternates between
+repetitions, `--duration` (default 300 s) caps each session, and `models.txt`
+records the llama.cpp commit and the SHA-256 of every model. A session counts
+as failed unless llama.cpp exits with status 0 and `capture_summary.txt` reads
+`capture_status=complete`. When the daemon is not at its default location,
+pass the launcher options with `--launcher-args`, for example
+`--launcher-args "--socket /tmp/daemon.sock --library /path/libnvidia-process-metrics.so"`.
+Arguments after `--` go to llama.cpp.
+
+Each session is a normal capture: use one sweep as training sessions for the
+pooled kernel-energy model, and a session of a model outside that sweep as an
+unseen workload (see "Predict an unseen workload" in the top-level README).
